@@ -7,33 +7,22 @@ from pydantic import BaseModel
 import markdownify
 import uvicorn
 
-# 配置日志
+# 配置日志 - 高并发优化版本
 def setup_logging():
-    """设置日志配置"""
-    # 创建日志文件名（包含时间戳）
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_filename = f"xpath_processing_{timestamp}.log"
+    """设置日志配置 - 减少IO开销"""
+    # 生产环境只记录WARNING及以上级别
+    log_level = logging.WARNING  # 从INFO改为WARNING
     
-    # 配置日志格式
+    # 配置日志格式（简化格式）
     logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
+        level=log_level,
+        format='%(levelname)s - %(message)s',  # 简化格式
         handlers=[
-            logging.FileHandler(log_filename, encoding='utf-8'),
-            logging.StreamHandler()  # 保留控制台输出，但只显示重要信息
+            logging.StreamHandler()  # 只输出到控制台，减少文件IO
         ]
     )
     
-    # 创建专门的文件日志器（不输出到控制台）
-    file_logger = logging.getLogger('file_only')
-    file_logger.setLevel(logging.INFO)
-    file_handler = logging.FileHandler(log_filename, encoding='utf-8')
-    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-    file_logger.addHandler(file_handler)
-    file_logger.propagate = False  # 防止传播到根日志器
-    
-    print(f"日志将写入文件: {log_filename}")
-    return file_logger
+    return logging.getLogger(__name__)
 
 # 初始化日志
 logger = setup_logging()
