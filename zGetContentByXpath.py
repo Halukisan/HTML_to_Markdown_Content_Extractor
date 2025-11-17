@@ -37,9 +37,11 @@ app = FastAPI(
 # Pydantic模型
 class HTMLInput(BaseModel):
     html_content: str
+    url: str = ""  # 可选的URL字段，暂时不处理
     
 class MarkdownOutput(BaseModel):
     markdown_content: str
+    html_content: str  # 新增：提取的HTML内容
     xpath: str
     status: str
 
@@ -749,6 +751,7 @@ def extract_content_to_markdown(html_content: str):
             logger.error("未找到主内容容器")
             return {
                 'markdown_content': '',
+                'html_content': '',  # 未找到容器时返回空HTML
                 'xpath': '',
                 'status': 'failed'
             }
@@ -774,9 +777,11 @@ def extract_content_to_markdown(html_content: str):
         
         logger.info(f"成功提取内容，XPath: {xpath}")
         logger.info(f"Markdown内容长度: {len(markdown_content)}")
+        logger.info(f"HTML内容长度: {len(cleaned_container_html)}")
         
         return {
             'markdown_content': markdown_content,
+            'html_content': cleaned_container_html,  # 返回清理后的HTML内容
             'xpath': xpath,
             'status': 'success'
         }
@@ -789,6 +794,7 @@ def extract_content_to_markdown(html_content: str):
         logger.error(f"完整堆栈:\n{traceback.format_exc()}")
         return {
             'markdown_content': '',
+            'html_content': '',  # 错误时返回空HTML
             'xpath': '',
             'status': 'failed'
         }
@@ -2554,7 +2560,11 @@ async def extract_html_to_markdown(input_data: HTMLInput):
         input_data: 包含HTML内容的输入数据
         
     Returns:
-        MarkdownOutput: 包含Markdown内容、XPath和状态的响应
+        MarkdownOutput: 包含以下字段的响应
+            - markdown_content: 提取的Markdown格式内容
+            - html_content: 提取的HTML格式内容（已清理script/style标签）
+            - xpath: 定位到内容容器的XPath表达式
+            - status: 处理状态 (success/failed)
     """
     try:
         if not input_data.html_content.strip():
@@ -2570,6 +2580,7 @@ async def extract_html_to_markdown(input_data: HTMLInput):
         
         return MarkdownOutput(
             markdown_content=result['markdown_content'],
+            html_content=result['html_content'],
             xpath=result['xpath'],
             status=result['status']
         )
