@@ -39,7 +39,7 @@ else:
 > 算法已经非常稳健，切勿修改任何一个数字和字符，每一个分值的计算和确定都是大量的测试数据得到的经验。
 
 ## API 端点
-**xxxxxxxx:8000/extract** 
+**192.169.202.10:8000/extract** 
 ### 1. 健康检查
 
 **GET** `/health`
@@ -63,7 +63,8 @@ else:
 **请求体:**
 ```json
 {
-  "html_content": "<html>...</html>"
+  "html_content": "<html>...</html>",
+  "url":"网页的url(可选，用于之后的OCR)"
 }
 ```
 
@@ -71,6 +72,7 @@ else:
 ```json
 {
   "markdown_content": "# 标题\n\n这是正文内容...",
+  "html_content":"定位并清洗得到的html内容",
   "xpath": "//div[@class='content']",
   "status": "success"
 }
@@ -115,5 +117,4 @@ ps aux | grep gunicorn
 
 ```
 kill xxxx
-```
 ```
