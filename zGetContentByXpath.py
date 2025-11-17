@@ -240,7 +240,7 @@ def preprocess_html_remove_interference(page_tree):
     
     logger.info("开始精准HTML清理流程...")
     
-    # 第零步：删除所有 display:none 的不可见元素
+    # 第零步：删除所有 display:none 的不可见元素 以及 class为ng-hide的元素（ng-hide为前端框架中固定的class名称）
     display_none_count = remove_display_none_elements(body)
     logger.info(f"删除了 {display_none_count} 个 display:none 不可见元素")
     
@@ -259,18 +259,23 @@ def preprocess_html_remove_interference(page_tree):
 
 def remove_display_none_elements(body):
     """
-    删除所有 display:none 的不可见元素
+    删除所有 display:none 的不可见元素及其子元素
+    以及删除class为ng-hide的元素及其子元素
     这些元素在页面上不可见，不应该被提取
     """
-    logger.info("开始删除 display:none 不可见元素...")
+    logger.info("开始删除 display:none 不可见元素和 ng-hide 元素...")
     
     removed_count = 0
     
     # 查找所有有 style 属性的元素
     elements_with_style = body.xpath(".//*[@style]")
     
+    # 查找所有有 ng-hide class 的元素
+    ng_hide_elements = body.xpath(".//*[contains(concat(' ', normalize-space(@class), ' '), ' ng-hide ')]")
+    
     elements_to_remove = []
     
+    # 处理 display:none 元素
     for element in elements_with_style:
         style = element.get('style', '').lower()
         
@@ -282,17 +287,35 @@ def remove_display_none_elements(body):
                 elements_to_remove.append(element)
                 elem_id = element.get('id', '')
                 elem_class = element.get('class', '')
-                logger.info(f"  标记删除不可见元素: {element.tag} id='{elem_id[:30]}' class='{elem_class[:30]}'")
-    
-    # 删除标记的元素
+                logger.info(f"  标记删除不可见元素(display:none): {element.tag} id='{elem_id[:30]}' class='{elem_class[:30]}'")
+
+    # 处理 ng-hide 元素
+    for element in ng_hide_elements:
+        if element not in elements_to_remove:  # 避免重复添加
+            elements_to_remove.append(element)
+            elem_id = element.get('id', '')
+            elem_class = element.get('class', '')
+            logger.info(f"  标记删除不可见元素(ng-hide): {element.tag} id='{elem_id[:30]}' class='{elem_class[:30]}'")
+
+    # 删除标记的元素及其所有子元素
     for element in elements_to_remove:
         try:
             parent = element.getparent()
             if parent is not None:
+                # 记录删除前的信息
+                elem_id = element.get('id', '')
+                elem_class = element.get('class', '')
+                child_count = len(element.xpath(".//*"))
+                
+                # 删除元素（会自动删除所有子元素）
                 parent.remove(element)
                 removed_count += 1
+                
+                logger.info(f"  ✓ 已删除: {element.tag} id='{elem_id[:30]}' class='{elem_class[:30]}' (包含{child_count}个子元素)")
         except Exception as e:
-            logger.error(f"删除 display:none 元素时出错: {e}")
+            logger.error(f"删除不可见元素时出错: {e}")
+    
+    logger.info(f"删除完成，共删除 {removed_count} 个不可见元素")
     
     return removed_count
 
@@ -701,15 +724,20 @@ def is_interference_container(container):
     return False
 
 def find_article_container(page_tree):
+    """
+    查找文章容器
+    返回: (main_content, cleaned_body) - 主内容容器和清理后的body
+    """
     cleaned_body = preprocess_html_remove_interference(page_tree)
     
     if cleaned_body is None:
         logger.error("清理后的body为None")
-        return None
+        return None, None
     
     main_content = find_main_content_in_cleaned_html(cleaned_body)
     
-    return main_content
+    # 返回主内容容器和清理后的body（确保使用清理后的tree）
+    return main_content, cleaned_body
 
 def extract_content_to_markdown(html_content: str):
     """
@@ -725,16 +753,19 @@ def extract_content_to_markdown(html_content: str):
         # 解析HTML
         tree = html.fromstring(html_content)
         
-        # 获取主内容容器
-        main_container = find_article_container(tree)
+        # 获取主内容容器（从清理后的tree中获取）
+        main_container, cleaned_body = find_article_container(tree)
         
-        if not main_container:
+        if not main_container or cleaned_body is None:
             logger.error("未找到主内容容器")
             return {
                 'markdown_content': '',
                 'xpath': '',
                 'status': 'failed'
             }
+        
+        logger.info("✓ 使用清理后的HTML tree进行内容提取")
+        
         # 生成XPath
         xpath = generate_xpath(main_container)
         
@@ -1345,6 +1376,8 @@ def calculate_content_container_score(container):
     if 'display' in style and 'none' in style:
         score -= 1000  # 极大减分，基本排除
         debug_info.append("❌ display:none 不可见元素: -1000")
+        logger.warning(f"⚠️ 警告：在评分阶段发现 display:none 元素（应该已被删除）")
+        logger.warning(f"   元素: {container.tag} id='{elem_id[:30]}' class='{classes[:30]}'")
         logger.info("❌ 发现 display:none，这是不可见元素，直接排除")
         logger.info(f"最终得分: {score}")
         return score
@@ -2562,7 +2595,7 @@ import os
 import glob
 
 # 启动服务器的函数
-def start_server(host: str = "0.0.0.0", port: int = 8000):
+def start_server(host: str = "0.0.0.0", port: int = 8321):
     """启动FastAPI服务器"""
     uvicorn.run(app, host=host, port=port)
 
@@ -2573,8 +2606,8 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "api":
         # 启动API服务器
         print("启动HTML to Markdown API服务器...")
-        print("API文档: http://localhost:8000/docs")
-        print("健康检查: http://localhost:8000/health")
+        print("API文档: http://localhost:8321/docs")
+        print("健康检查: http://localhost:8321/health")
         start_server()
     # else:
     #     # 原有的文件处理逻辑（保留向后兼容）
