@@ -6,13 +6,14 @@
 3. 然后按照以下代码进行解析
 
 ```python
+
 import requests
 
 with open("htmlcontent.html", 'r', encoding='utf-8') as f:
     html_content = f.read()
 
 response = requests.post(
-    "http://localhost:8000/extract",
+    # "http://localhost:8321/extract",
     json={"html_content": html_content}
 )
 
@@ -23,12 +24,16 @@ if response.status_code == 200:
     try:
         result = response.json()
         markdown_content = result.get("markdown_content", response.text)  
+        html_content = result.get("html_content",response.text)
     except ValueError:
         markdown_content = response.text
 
-    with open("htmlcontent.md", 'w', encoding='utf-8') as f:
+    with open("1.md", 'w', encoding='utf-8') as f:
         f.write(markdown_content)
-    print("Markdown content saved to htmlcontent.md")
+    print("Markdown content saved to 1.md")
+    with open("1.html", 'w', encoding='utf-8') as f:
+        f.write(html_content)
+    print("html_content saved to 1.html")
 else:
     print("Request failed!")
 ```
@@ -77,10 +82,6 @@ else:
   "status": "success"
 }
 ```
-
-### 代码示例
-
-![alt text](image.png)
 
 ### 使用步骤：
 > 由于是生产环境部署，当前版本a634196的提交修改了日志配置，减少IO，因此几乎看不到详细信息，如果要进行调试，请使用上一提交版本的code
