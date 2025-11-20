@@ -9,9 +9,9 @@ workers = multiprocessing.cpu_count() * 2 + 1  # 推荐公式
 worker_class = "uvicorn.workers.UvicornWorker"
 
 # 并发配置
-worker_connections = 1000  # 每个worker的最大并发连接数
-max_requests = 1000  # worker处理多少请求后重启（防止内存泄漏）
-max_requests_jitter = 50  # 随机抖动，避免所有worker同时重启
+worker_connections = 1500  # 每个worker的最大并发连接数
+max_requests = 2000  # worker处理多少请求后重启（防止内存泄漏）
+max_requests_jitter = 200  # 随机抖动，避免所有worker同时重启
 
 # 超时配置
 timeout = 120  # 请求超时时间（秒）
