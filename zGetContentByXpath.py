@@ -747,7 +747,7 @@ def extract_content_to_markdown(html_content: str):
         # 获取主内容容器（从清理后的tree中获取）
         main_container, cleaned_body = find_article_container(tree)
         
-        if not main_container or cleaned_body is None:
+        if main_container is None or cleaned_body is None:
             logger.error("未找到主内容容器")
             return {
                 'markdown_content': '',
@@ -2417,7 +2417,7 @@ def find_list_container(page_tree):
     
     return current_container
 def generate_xpath(element):
-    if not element:
+    if element is None:
         return None
 
     tag = element.tag
