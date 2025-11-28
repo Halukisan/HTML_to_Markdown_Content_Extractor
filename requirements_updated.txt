@@ -8,4 +8,6 @@ selenium==4.29.0
 PyYAML==6.0.2
 DrissionPage==4.1.0.17
 webdriver-pool==1.0.0
+
 markdownify==0.11.6
+gunicorn
