@@ -1,33 +1,16 @@
-# Gunicorn配置文件 - 高并发优化
 import multiprocessing
 
-# 服务器绑定
-bind = "0.0.0.0:8000"
+# 1. 注释掉或删除这行，我们将通过命令行参数传递端口
+# bind = "0.0.0.0:8000" 
 
-# Worker配置 - 根据CPU核心数调整
-workers = multiprocessing.cpu_count() * 2 + 1  # 推荐公式
+# Worker配置
+# 注意：如果你开启了多个Gunicorn实例（比如2个端口），
+# 这里的worker数量可能需要除以实例数，否则总进程数过多会导致CPU切换频繁
+# 如果你的CPU核心数较少，建议写死一个数字，比如 workers = 4
+workers = multiprocessing.cpu_count() * 2 + 1 
 worker_class = "uvicorn.workers.UvicornWorker"
 
-# 并发配置
-worker_connections = 1500  # 每个worker的最大并发连接数
-max_requests = 2000  # worker处理多少请求后重启（防止内存泄漏）
-max_requests_jitter = 200  # 随机抖动，避免所有worker同时重启
+# ... (其他配置保持不变) ...
 
-# 超时配置
-timeout = 120  # 请求超时时间（秒）
-graceful_timeout = 30  # 优雅关闭超时
-keepalive = 5  # Keep-Alive连接超时
-
-# 日志配置
-accesslog = "access.log"
-errorlog = "error.log"
-loglevel = "warning"  # 降低日志级别，减少IO
-
-# 进程命名
+# 进程命名 (为了方便脚本 kill，保持统一的前缀)
 proc_name = "zGetContentByXpath"
-
-# 预加载应用（提高启动速度，但会增加内存使用）
-preload_app = True
-
-# 性能优化
-worker_tmp_dir = "/dev/shm"  # 使用内存作为临时目录（Linux）
