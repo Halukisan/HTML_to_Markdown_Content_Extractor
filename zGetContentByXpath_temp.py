@@ -44,6 +44,7 @@ class MarkdownOutput(BaseModel):
     html_content: str  # 新增：提取的HTML内容
     xpath: str
     status: str
+    process_time:float
 
 # 移除了浏览器相关的函数，现在只处理HTML内容
 def remove_header_footer_by_content_traceback(body):
@@ -255,37 +256,33 @@ def remove_display_none_elements(body):
     这些元素在页面上不可见，不应该被提取
     """
     logger.info("开始删除 display:none 不可见元素和 ng-hide 元素...")
-    
-    removed_count = 0
-    
-    # 查找所有有 style 属性的元素
-    elements_with_style = body.xpath(".//*[@style]")
-    
-    # 查找所有有 ng-hide class 的元素
-    ng_hide_elements = body.xpath(".//*[contains(concat(' ', normalize-space(@class), ' '), ' ng-hide ')]")
-    
-    elements_to_remove = []
-    
-    # 处理 display:none 元素
-    for element in elements_with_style:
-        style = element.get('style', '').lower()
-        
-        # 检查是否包含 display:none 或 display: none
-        if 'display' in style and 'none' in style:
-            # 更精确的检查，避免误判（如 display:inline）
-            import re
-            if re.search(r'display\s*:\s*none', style, re.IGNORECASE):
-                elements_to_remove.append(element)
-                elem_id = element.get('id', '')
-                elem_class = element.get('class', '')
-                logger.info(f"  标记删除不可见元素(display:none): {element.tag} id='{elem_id[:30]}' class='{elem_class[:30]}'")
 
-    # 处理 ng-hide 元素
-    for element in ng_hide_elements:
-        if element not in elements_to_remove:  # 避免重复添加
+    removed_count = 0
+
+    # 优化：合并XPath查询，减少DOM遍历次数
+    elements_to_remove = []
+
+    # 一次性查找所有需要检查的元素
+    all_candidates = body.xpath(".//*[@style or contains(concat(' ', normalize-space(@class), ' '), ' ng-hide ')]")
+
+    # 分类处理，避免重复XPath查询
+    for element in all_candidates:
+        style = element.get('style', '').lower()
+        classes = element.get('class', '')
+
+        # 检查是否包含 display:none 或 ng-hide
+        if (style and 'display' in style and 'none' in style and
+            re.search(r'display\s*:\s*none', style, re.IGNORECASE)) or \
+           (' ng-hide ' in f" {classes} "):
             elements_to_remove.append(element)
-            elem_id = element.get('id', '')
-            elem_class = element.get('class', '')
+    # 记录要删除的元素信息
+    for element in elements_to_remove:
+        elem_id = element.get('id', '')
+        elem_class = element.get('class', '')
+        style = element.get('style', '').lower()
+        if style and 'display' in style and 'none' in style:
+            logger.info(f"  标记删除不可见元素(display:none): {element.tag} id='{elem_id[:30]}' class='{elem_class[:30]}'")
+        else:
             logger.info(f"  标记删除不可见元素(ng-hide): {element.tag} id='{elem_id[:30]}' class='{elem_class[:30]}'")
 
     # 删除标记的元素及其所有子元素
@@ -1351,13 +1348,14 @@ def calculate_content_container_score(container):
     if container is None:
         logger.error("容器为None，无法计算得分")
         return -1000
-    
+
     score = 0
     debug_info = []
-    
+
     classes = container.get('class', '').lower()
     elem_id = container.get('id', '').lower()
     text_content = container.text_content()
+    text_content_lower = text_content.lower()  # 优化：只计算一次小写转换
     text_length = len(text_content.strip())
 
     logger.info(f"\n=== 开始评分容器 ===")
@@ -1506,9 +1504,9 @@ def calculate_content_container_score(container):
         'copyright', 'all rights reserved', 'powered by', 'designed by'
     ]
     
-    # 详细记录找到的关键词
-    found_header_keywords = [keyword for keyword in header_content_keywords if keyword in text_content.lower() and not (('当前位置' in text_content.lower()) or ('当前的位置' in  text_content.lower())) ]
-    found_footer_keywords = [keyword for keyword in footer_content_keywords if keyword in text_content.lower()]
+    # 详细记录找到的关键词 - 使用缓存的小写文本
+    found_header_keywords = [keyword for keyword in header_content_keywords if keyword in text_content_lower and not (('当前位置' in text_content_lower) or ('当前的位置' in  text_content_lower))]
+    found_footer_keywords = [keyword for keyword in footer_content_keywords if keyword in text_content_lower]
     
     header_content_count = len(found_header_keywords)
     footer_content_count = len(found_footer_keywords)
@@ -1665,7 +1663,7 @@ def calculate_content_container_score(container):
     
     logger.info(f"🔍 内容特征检测:")
     for pattern, weight, feature_name in content_indicators:
-        matches = re.findall(pattern, text_content)
+        matches = re.findall(pattern, text_content_lower)  # 使用缓存的小写文本
         if matches:
             total_content_score += weight
             matched_features.append(f"{feature_name}({len(matches)})")
@@ -2550,7 +2548,7 @@ async def health_check():
         "status": "healthy",
         "timestamp": datetime.now().isoformat()
     }
-
+import time
 @app.post("/extract", response_model=MarkdownOutput)
 async def extract_html_to_markdown(input_data: HTMLInput):
     """
@@ -2571,10 +2569,13 @@ async def extract_html_to_markdown(input_data: HTMLInput):
             raise HTTPException(status_code=400, detail="HTML内容不能为空")
         
         logger.info("开始处理HTML内容提取")
-        
+        start_time = time.time()  # ⏱️ 开始计时
+
         # 提取内容并转换为Markdown
         result = extract_content_to_markdown(input_data.html_content)
-        
+        end_time = time.time()  # ⏱️ 结束计时
+        elapsed = end_time - start_time
+
         if result['status'] == 'failed':
             raise HTTPException(status_code=422, detail="无法从HTML中提取有效内容")
         
@@ -2582,7 +2583,8 @@ async def extract_html_to_markdown(input_data: HTMLInput):
             markdown_content=result['markdown_content'],
             html_content=result['html_content'],
             xpath=result['xpath'],
-            status=result['status']
+            status=result['status'],
+            process_time = elapsed
         )
         
     except HTTPException:
@@ -2650,4 +2652,3 @@ if __name__ == "__main__":
 # 获取到的次HTML即为排除了干扰项的HTML内容，我们需要的container可能就存在于此，对于这个次级HTML，我们需要再一次的进行过滤，排除里面的header和footer，然后逐步缩小，但是不要精确，因为过于精确的获取容器会导致出现疏漏。
 
 # 对于算法的进一步修改，需要判断出一个合理的权重，即扣分标准。首先！一定是扣分的居多，加分的少，对于可能是底部或者首部的内容，要大量的减分，应该算法的主要思路就是排除干扰项！
-
