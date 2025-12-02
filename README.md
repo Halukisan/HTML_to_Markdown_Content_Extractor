@@ -36,7 +36,8 @@
   "markdown_content": "# 标题\n\n这是正文内容...",
   "html_content":"定位并清洗得到的html内容",
   "xpath": "//div[@class='content']",
-  "status": "success"
+  "status": "success",
+  "process_time":(float，单位秒) 0.1682
 }
 ```
 
