@@ -545,7 +545,7 @@ class URLPlaceholderReplacer:
         file_extensions = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
                          '.zip', '.rar', '.tar', '.gz', '.7z', '.txt', '.rtf']
         # 图片扩展名
-        pic_extensions = ['.jpg','.png','jpeg','webp','svg']
+        pic_extensions = ['.jpg','.png','.jpeg','.webp','.svg']
 
         url_lower = url.lower()
 
@@ -749,5 +749,6 @@ async def main():
 if __name__ == "__main__":
     asyncio.run(main())
     asyncio.run(test_placeholder_replacement())
+
 
 
