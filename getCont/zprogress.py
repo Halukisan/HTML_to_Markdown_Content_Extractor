@@ -27,9 +27,9 @@ class CustomMarkdownConverter(MarkdownConverter):
     
     def __init__(self, **options):
         # 定义所有需要保留为 HTML 的表格标签
-        table_tags = ['table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td', 'caption', 'colgroup', 'col']
+        # table_tags = ['table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td', 'caption', 'colgroup', 'col']
         
-        options['keep_tags'] = options.get('keep_tags', []) + table_tags
+        # options['keep_tags'] = options.get('keep_tags', []) + table_tags
         
         # 初始化父类
         super().__init__(**options)
@@ -68,6 +68,32 @@ class CustomMarkdownConverter(MarkdownConverter):
         处理 <source> 标签，直接忽略，避免重复输出
         """
         return ""
+    def convert_table(self, el, text, conversion_args=None,**kwargs):
+        """
+        重写表格转化逻辑
+        el: BeautifulSoup 的表格元素对象
+        text: 已经被 markdownify 转化过的内部文本（在这个场景下我们可能不用它，而是用 el）
+        """
+        # 1. (可选) 像处理视频一样，你可以提取或修改属性
+        # 例如：强制所有表格宽度 100%，或者加上边框
+        el['width'] = '100%'
+        el['border'] = '1'
+        el['cellspacing'] = '0'
+        
+        # 也可以删除不需要的属性，比如 style (防止行内样式干扰)
+        if 'style' in el.attrs:
+            del el['style']
+
+        # 2. 获取处理后的 HTML 字符串
+        # str(el) 会获取包含 table 标签及其内部所有子标签(tr, td...)的完整原始 HTML
+        # 注意：这样做，表格内部的文字将保留 HTML 格式（比如内部的 <b> 变不成 **），
+        # 这通常是保留表格 HTML 时想要的效果。
+        html_output = str(el)
+
+        # 3. 返回带换行的字符串 (Markdown 中块级元素最好前后有换行)
+        # 我传过来的html都是清理过的,所以输出的html也是干净的,没有多余属性的
+
+        return f'\n{html_output}\n'
 
 
 class HTMLToMarkdownConverter:
@@ -710,7 +736,7 @@ async def test_placeholder_replacement():
 
 async def main():
     example_html = ""
-    with open("3.html", 'r', encoding='utf-8') as f:
+    with open("1.html", 'r', encoding='utf-8') as f:
         example_html = f.read()
 
     response = requests.post(
@@ -749,6 +775,5 @@ async def main():
 if __name__ == "__main__":
     asyncio.run(main())
     asyncio.run(test_placeholder_replacement())
-
 
 
