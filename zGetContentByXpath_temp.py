@@ -1,25 +1,42 @@
 import re
+import string
 import logging
 from datetime import datetime
 from lxml import html
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import markdownify
+from markdownify import MarkdownConverter
 import uvicorn
+from bs4 import BeautifulSoup, Comment,Tag
+import logging
+import os
+from logging.handlers import RotatingFileHandler
+import datetime
 
-# 配置日志 - 高并发优化版本
 def setup_logging():
-    """设置日志配置 - 减少IO开销"""
-    # 生产环境只记录WARNING及以上级别
-    log_level = logging.WARNING  # 从INFO改为WARNING
+    """设置日志配置 - 输出到带时间戳的日志文件 + 控制台"""
+    # 生成时间戳文件名
+    log_dir = "logs"
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = os.path.join(log_dir, f"xpath_processing_{timestamp}.log")
     
-    # 配置日志格式（简化格式）
+    # 创建日志目录
+    os.makedirs(log_dir, exist_ok=True)
+    
+    # Handler: 文件（可选轮转）+ 控制台
+    file_handler = logging.FileHandler(log_file, encoding='utf-8')
+    console_handler = logging.StreamHandler()
+    
+    # 日志格式
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(formatter)
+    console_handler.setFormatter(formatter)
+    
+    # 配置 logger
     logging.basicConfig(
-        level=log_level,
-        format='%(levelname)s - %(message)s',  # 简化格式
-        handlers=[
-            logging.StreamHandler()  # 只输出到控制台，减少文件IO
-        ]
+        level=logging.DEBUG,
+        handlers=[file_handler, console_handler]
     )
     
     return logging.getLogger(__name__)
@@ -31,8 +48,784 @@ logger = setup_logging()
 app = FastAPI(
     title="HTML to Markdown Content Extractor",
     description="Extract main content from HTML and convert to Markdown",
-    version="2.0.0"
+    version="3.0.0"
 )
+# 2025.12.5新增---------------------------------
+class CustomMarkdownConverter(MarkdownConverter):
+    """
+    自定义转换器
+    这里为了保留视频和表格的原有html
+    """
+    def __init__(self,**options):
+        # 定义所有需要保留为 HTML 的表格标签   西巴的,对于表格和视频,都不能用这个简单的keep_tags去排除,laj markdownify,只能重写convert
+        # table_tags = ['table','tbody','thead','tfoot','tr','th','caption','colgroup','col']
+        # options['keep_tags'] = options.get('keep_tags',[])+table_tags
+        super().__init__(**options)
+
+    def convert_video(self,el,text,convert_as_inline=False,**kwargs):
+        src = el.get('src')
+        poster = el.get('poster')
+
+        if not src:
+            source_tag = el.find('source')
+            if source_tag:
+                src = source_tag.get('src')
+
+        if not src:
+            return ""
+        
+        html_output = f'<video src="{src}" controls="controls" width="100%"'
+
+        if poster:
+            html_output += f' poster="{poster}"'
+
+        html_output += '></video>'
+
+        return f'\n{html_output}\n'
+    
+    def convert_table(self, el, text, conversion_args=None,**kwargs):
+        """
+        重写表格转化逻辑
+        el: BeautifulSoup 的表格元素对象
+        text: 已经被 markdownify 转化过的内部文本（在这个场景下我们可能不用它，而是用 el）
+        """
+        # 1. (可选) 像处理视频一样，你可以提取或修改属性
+        # 例如：强制所有表格宽度 100%，或者加上边框
+        el['width'] = '100%'
+        el['border'] = '1'
+        el['cellspacing'] = '0'
+        
+        # 也可以删除不需要的属性，比如 style (防止行内样式干扰)
+        if 'style' in el.attrs:
+            del el['style']
+
+        # 2. 获取处理后的 HTML 字符串
+        # str(el) 会获取包含 table 标签及其内部所有子标签(tr, td...)的完整原始 HTML
+        # 注意：这样做，表格内部的文字将保留 HTML 格式（比如内部的 <b> 变不成 **），
+        # 这通常是保留表格 HTML 时想要的效果。
+        html_output = str(el)
+
+        # 3. 返回带换行的字符串 (Markdown 中块级元素最好前后有换行)
+        # 我传过来的html都是清理过的,所以输出的html也是干净的,没有多余属性的
+        return f'\n{html_output}\n'
+    def convert_source(self,el,text,convert_as_inline=False,**kwargs):
+        return ""
+
+def delete_short_tags(soup: BeautifulSoup, tag_text: str) -> None:
+    """
+    删除包含指定文本的短标签（前后不是长文字的情况）
+    类似Java的deleteShortTag功能
+    """
+    # 查找所有包含指定文本的节点
+    # 先收集所有要删除的元素，避免在迭代过程中修改DOM结构
+    elements_to_delete = []
+
+    for element in soup.find_all(string=re.compile(re.escape(tag_text))):
+        # 安全检查1：确保 element 是 NavigableString 且有 parent
+        if not hasattr(element, 'parent') or element.parent is None:
+            continue
+
+        parent = element.parent
+
+        # 安全检查2：确保 parent 仍在DOM树中（未被删除）
+        if not hasattr(parent, 'decompose'):
+            continue
+
+        # 获取父标签的文本内容
+        try:
+            parent_text = parent.get_text(strip=True)
+        except Exception:
+            continue  # 如果获取文本失败，跳过
+
+        # 检查前后是否是长文字
+        # 如果整个父标签文本很短（小于50个字符），认为可以删除
+        if len(parent_text) < 50:
+            # 检查是否匹配确切的目标文本
+            if tag_text in parent_text:
+                # 进一步检查，确保不是正文中的内容
+                # 如果父标签是span、div等容器标签，且文本很短，很可能是导航或功能按钮
+                if parent.name in ['span', 'div', 'a', 'button', 'p'] and not any(
+                    keyword in parent_text.lower()
+                    for keyword in ['文章', '内容', '正文', '详情', '更多信息']
+                ):
+                    elements_to_delete.append(parent)
+
+    # 安全删除：在收集完成后统一删除
+    for parent in elements_to_delete:
+        try:
+            if parent and hasattr(parent, 'decompose'):
+                parent.decompose()
+        except Exception:
+            # 如果删除失败，静默跳过
+            logger.warning("delete_short_tags安全删除失败了")
+            pass
+
+def clean_table_html(table_html: str) -> str:
+    """
+    清理表格HTML：保留结构，移除无用的布局样式
+    """
+    try:
+        table_soup = BeautifulSoup(table_html, 'html.parser')
+
+        essential_attributes = {
+            'table': [],
+            'thead': [],
+            'tbody': [],
+            'tr': [],
+            'th': ['colspan', 'rowspan'],
+            'td': ['colspan', 'rowspan']
+        }
+
+        def clean_style_attribute(style_value: str) -> str:
+            if not style_value:
+                return ""
+
+            # 保留的语义化样式
+            semantic_keywords = ['font-weight', 'font-style', 'text-decoration']
+            # 移除的布局样式
+            layout_keywords = ['margin', 'padding', 'text-align', 'text-indent',
+                             'width', 'height', 'float', 'position', 'display']
+
+            style_declarations = style_value.split(';')
+            kept_declarations = []
+
+            for declaration in style_declarations:
+                declaration = declaration.strip()
+                if not declaration:
+                    continue
+
+                has_semantic = any(keyword in declaration.lower() for keyword in semantic_keywords)
+                has_layout = any(keyword in declaration.lower() for keyword in layout_keywords)
+
+                if has_semantic and not has_layout:
+                    kept_declarations.append(declaration)
+
+            return '; '.join(kept_declarations)
+
+        def clean_tag(tag):
+            if tag.name is None:
+                return
+
+            allowed_attrs = essential_attributes.get(tag.name, [])
+
+            if tag.has_attr('style'):
+                cleaned_style = clean_style_attribute(tag['style'])
+                if cleaned_style.strip():
+                    tag['style'] = cleaned_style
+                    if 'style' not in allowed_attrs:
+                        allowed_attrs.append('style')
+                else:
+                    del tag['style']
+
+            attrs_to_remove = [attr for attr in tag.attrs if attr not in allowed_attrs]
+            for attr in attrs_to_remove:
+                del tag[attr]
+
+            for child in tag.find_all(recursive=False):
+                clean_tag(child)
+
+        clean_tag(table_soup)
+        return str(table_soup)
+
+    except Exception as e:
+        logger.warning(f"清理表格HTML时出错: {str(e)}")
+        return table_html
+
+def remove_empty_tags(soup: BeautifulSoup) -> None:
+    """
+    递归移除所有空标签（没有文本内容、没有子元素、或只有空白字符的标签）
+    保留一些有意义的空标签，如br、hr、img等
+    """
+    # 定义需要保留的空标签（即使它们没有内容）
+    tags_to_keep_empty = {'br', 'hr', 'img', 'input', 'embed', 'area', 'base', 'col', 'frame', 'link', 'meta', 'param', 'source', 'track', 'wbr'}
+
+    # 递归清理空标签
+    changed = True
+    while changed:
+        changed = False
+        # 从后往前遍历，避免删除时影响索引
+        for tag in soup.find_all(True):
+            if tag.name in tags_to_keep_empty:
+                continue
+
+            # 检查标签是否为空
+            has_content = False
+
+            # 检查是否有非空白文本内容
+            if tag.get_text(strip=True):
+                has_content = True
+
+            # 检查是否有非文本子元素（如img、br等）
+            if not has_content and tag.find_all():
+                for child in tag.find_all(True):
+                    if child.name in tags_to_keep_empty:
+                        has_content = True
+                        break
+
+            # 如果标签为空，将其删除
+            if not has_content:
+                tag.decompose()
+                changed = True
+                break
+
+
+def clean_html_content_advanced(html_content: str) -> str:
+    """
+    清理HTML内容 复用zprogress.py的逻辑
+    """
+    try:
+        soup = BeautifulSoup(html_content, 'html.parser')
+
+        # 移除不需要的标签
+        for tag in soup.find_all(['script', 'style', 'meta', 'link', 'noscript']):
+            tag.decompose()
+
+        # 删除短标签（功能按钮等）
+        tags_to_delete = [
+            "已阅","字号", "打印", "关闭", "收藏","分享到微信","分享","字体",
+            "扫一扫在手机打开当前页", "扫一扫在手机上查看当前页面","用微信“扫一扫”","分享给您的微信好友",
+            "相关链接"
+        ]
+
+        for tag_text in tags_to_delete:
+            delete_short_tags(soup, tag_text)
+
+        # 删除尾部的"我要纠错"
+        # 先收集要删除的元素，避免迭代时修改DOM
+        error_elements_to_delete = []
+
+        for element in soup.find_all(string=re.compile("我要纠错")):
+            # 安全检查：确保 element 有 parent
+            if not hasattr(element, 'parent') or element.parent is None:
+                continue
+
+            parent = element.parent
+
+            # 安全检查：确保 parent 仍在DOM中且可以删除
+            if not hasattr(parent, 'get_text') or not hasattr(parent, 'decompose'):
+                continue
+
+            try:
+                if parent and len(parent.get_text(strip=True)) < 20:  # 如果是短文本
+                    error_elements_to_delete.append(parent)
+            except Exception:
+                # 如果获取文本失败，跳过
+                continue
+
+        # 安全删除收集到的元素
+        for parent in error_elements_to_delete:
+            try:
+                if parent and hasattr(parent, 'decompose'):
+                    parent.decompose()
+            except Exception:
+                logger.warning("clean_html_content_advanced安全删除失败了")
+                pass
+
+        # 保留属性列表
+        essential_attributes = {
+            'div': [], 'p': [], 'span': [],
+            'table': ['border', 'cellpadding', 'cellspacing'],
+            'tr': [], 'td': ['colspan', 'rowspan'], 'th': ['colspan', 'rowspan'],
+            'ul': [], 'ol': [], 'li': [],
+            'a': ['href', 'target'],
+            'img': ['src'],
+            'video': ['src', 'poster', 'controls'],
+            'source': ['src'],
+            'iframe': ['src'],
+            'br': [], 'hr': []
+        }
+
+        def clean_attributes(tag):
+            if tag.name is None:
+                return
+
+            allowed_attrs = essential_attributes.get(tag.name, [])
+
+            # 简单的 style 清理逻辑
+            if tag.has_attr('style'):
+                del tag['style']
+
+            attrs_to_remove = [attr for attr in tag.attrs if attr not in allowed_attrs]
+            for attr in attrs_to_remove:
+                del tag[attr]
+
+        for tag in soup.find_all(True):
+            clean_attributes(tag)
+
+        # 专门清理表格内部
+        for table in soup.find_all('table'):
+            cleaned_table = clean_table_html(str(table))
+            table.replace_with(BeautifulSoup(cleaned_table, 'html.parser'))
+
+        # 移除空标签
+        remove_empty_tags(soup)
+
+        return str(soup)
+
+    except Exception as e:
+        logger.warning(f"清理HTML内容时出错: {str(e)}")
+        return html_content
+# 2025.12.5新增结束---------------------------------
+
+# 2025.12.8新增 - 内容分割功能
+
+def remove_invisible_tags(soup: BeautifulSoup):
+    """清理干扰元素"""
+    for tag in soup(['script', 'style', 'noscript', 'iframe', 'svg', 'meta', 'link', 'input']):
+        tag.decompose()
+    for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
+        comment.extract()
+    for hidden in soup.find_all(attrs={"hidden": True}):
+        hidden.decompose()
+    style_pattern = re.compile(r'(display\s*:\s*none)|(visibility\s*:\s*hidden)', re.IGNORECASE)
+    for tag in soup.find_all(attrs={"style": True}):
+        if style_pattern.search(tag['style']):
+            tag.decompose()
+    # for tag in soup.find_all(class_=True):
+    #     classes = tag.get('class',[])
+    #     if 'hidden' in classes:
+    #         tag.decompose()
+    hidden_classes = ['pchide', 'hide', 'invisible', 'd-none','hidden']
+    selector = ','.join(f'.{cls}' for cls in hidden_classes)
+    for tag in soup.select(selector):
+        tag.decompose()
+
+def remove_duplicate_metadata_elements(soup, table_element):
+    """通过table表格中的元数据内容查找并删除重复的div表格"""
+    if not table_element:
+        return soup, 0
+
+    # 提取table中的文本内容
+    table_text = clean_text(table_element.get_text())
+    if not table_text:
+        return soup, 0
+
+    print(f"DEBUG: Table表格文本内容: {table_text[:150]}...")
+
+    # 定义需要匹配的元数据关键词
+    metadata_keywords = [
+        '发文机关', '发文字号', '发文日期', '成文日期', '发布日期', '主题分类',
+        '公文种类', '来源', '索引号', '标题', '文号', '签发人'
+    ]
+
+    # 从表格文本中提取包含关键词的完整短语
+    extracted_phrases = []
+
+    for keyword in metadata_keywords:
+        # 查找包含关键词的文本片段
+        keyword_pattern = f'{keyword}[^，。；；\n]*'
+        matches = re.findall(keyword_pattern, table_text)
+        for match in matches:
+            cleaned_match = clean_text(match)
+            if len(cleaned_match) > 5:  # 至少5个字符才有意义
+                extracted_phrases.append(cleaned_match)
+                print(f"DEBUG: 提取到元数据短语: {cleaned_match}")
+
+    if not extracted_phrases:
+        print("DEBUG: 未从表格中提取到有效的元数据短语")
+        return soup, 0
+
+    removed_count = 0
+
+    # 专门查找div元素中的重复内容
+    for phrase in extracted_phrases:
+        print(f"DEBUG: 正在div中搜索短语: {phrase}")
+
+        # 搜索包含该短语的div元素
+        matching_divs = []
+        all_uls = soup.find_all('ul')
+        all_tables = soup.find_all('tbody')
+
+        for div in all_uls:
+            # 跳过table本身的父div
+            if div in table_element.parents:
+                continue
+
+            div_text = clean_text(div.get_text())
+            if phrase in div_text:
+                matching_divs.append(div)
+                print(f"DEBUG: 在div中找到匹配短语: {div_text[:100]}...")
+
+        for tbody in all_tables:
+            # 更严格地检查：不能是原始表格本身，也不能是原始表格的子元素
+            if tbody == table_element or tbody in table_element.descendants:
+                continue
+
+            tbody_text = clean_text(tbody.get_text())
+            if phrase in tbody_text:
+                matching_divs.append(tbody)
+                print(f"DEBUG: 在tbody中找到匹配短语: {tbody_text[:100]}...")
+
+        # 对匹配的div进行进一步筛选
+        for div in matching_divs:
+            div_text = clean_text(div.get_text())
+
+            # 检查div中包含多少个元数据关键词
+            keyword_count = sum(1 for kw in metadata_keywords if kw in div_text)
+            matched_phrases_count = sum(1 for p in extracted_phrases if p in div_text)
+
+            # 如果div包含多个元数据关键词或多个匹配短语，认为是重复的div表格
+            if keyword_count >= 2 or matched_phrases_count >= 2:
+                print(f"DEBUG: 找到重复div表格，包含{keyword_count}个关键词，{matched_phrases_count}个匹配短语")
+                print(f"DEBUG: div表格内容: {div_text[:100]}...")
+                div.decompose()
+                removed_count += 1
+            else:
+                print(f"DEBUG: div匹配但元数据较少，保留")
+
+    print(f"DEBUG: 总共删除了 {removed_count} 个重复div表格")
+    return soup, removed_count
+
+def clean_text(text: str) -> str:
+    if not text: return ""
+    return ''.join(text.split())
+
+def get_element_score(element) -> int:
+    """
+    给元素打分，判断它有多像一个Header组件
+    返回: 0=不像, 1=弱特征(面包屑), 2=强特征(元数据表)
+    """
+    if not element or not isinstance(element, Tag):
+        return 0
+        
+    text = clean_text(element.get_text())
+    if not text: return 0
+    
+    # 排除长文本（防止误判正文）
+    if len(text) > 800: return 0
+
+    # 1. 强特征：元数据 (Table/Div)
+    meta_keywords = ['索引号', '主题分类', '发文字号', '发文机关', '成文日期', '发布日期', '公文种类', '浏览次数', '来源：', '来源:']
+    if sum(1 for kw in meta_keywords if kw in text) >= 1:
+        # 如果包含两个以上关键词，或者是一个特定的表格
+        if sum(1 for kw in meta_keywords if kw in text) >= 2 or element.name == 'table':
+            return 2
+        return 2
+
+    # 2. 弱特征：UI / 导航 / 面包屑
+    # 必须比较短，否则可能是正文里的词
+    if len(text) < 200:
+        ui_keywords = ['首页', '主页', '打印', '关闭', '收藏', '字号', '扫一扫', '分享', '当前位置', '位置：', '位置:']
+        if any(kw in text for kw in ui_keywords):
+            return 1
+        # 面包屑特征 ">"
+        if '>' in element.get_text() and len(text) < 100:
+            return 1
+            
+    return 0
+
+def is_content_start(element) -> bool:
+    """判断是否碰到了正文的开头（用于熔断）"""
+    if not element: return False
+    text = clean_text(element.get_text())
+    
+    # 如果一个独立的段落超过150字，且没有Header特征，那就是正文
+    if len(text) > 150 and get_element_score(element) == 0:
+        return True
+    
+    # 或者是 P 标签且稍长
+    if isinstance(element, Tag) and element.name == 'p' and len(text) > 50 and get_element_score(element) == 0:
+        return True
+        
+    return False
+
+def split_header_and_content_v2(html_content: str) -> tuple[str, str]:
+    """
+    【表格基准向上扩散法】
+    新的分割策略：
+    1. 找到表格元素（table标签）
+    2. 从表格开始向上扩散寻找面包屑
+    3. 如果向上扩散找到面包屑，说明顺序是：面包屑 → 表格 → 正文，以表格为分界点
+    4. 如果向上扩散没有找到面包屑，用正则匹配面包屑位置
+    5. 如果正则匹配到面包屑，说明面包屑在中间，回溯以面包屑为分界点
+    """
+    if not html_content:
+        return '', ''
+    print(f"DEBUG: HTML内容长度: {len(html_content)}")
+    try:
+        soup = BeautifulSoup(html_content, 'html.parser')
+        print("DEBUG: BeautifulSoup对象创建成功")
+        logger.debug("BeautifulSoup对象创建成功")
+    except Exception as e:
+        print(f"DEBUG: BeautifulSoup创建失败: {str(e)}")
+        logger.error(f"BeautifulSoup创建失败: {str(e)}")
+        return '', html_content
+
+    # 不要打印整个HTML内容，只打印长度和前100个字符
+    print(f"DEBUG: BeautifulSoup解析完成，内容长度: {len(str(soup))}")
+    logger.debug(f"BeautifulSoup解析完成，内容长度: {len(str(soup))}")
+    print(f"DEBUG: HTML内容预览: {str(soup)[:100]}...")
+    logger.debug(f"HTML内容预览: {str(soup)[:100]}...")
+
+    print("DEBUG: 开始移除不可见标签...")
+    logger.debug("开始移除不可见标签...")
+    remove_invisible_tags(soup)
+    print("DEBUG: 移除不可见标签完成")
+    logger.debug("移除不可见标签完成")
+
+    # 1. 找到表格元素
+    tables = soup.find_all('table')
+    table_element = None
+
+    for table in tables:
+        # 确保是元数据表格
+        if get_element_score(table) == 2:
+            table_element = table
+            print(f"DEBUG: 找到元数据表格: {clean_text(table.get_text())[:50]}")
+
+            # 处理重复的元数据元素（删除重复的div表格）
+            print("DEBUG: 开始处理重复的元数据元素...")
+            soup, metadata_removed_count = remove_duplicate_metadata_elements(soup, table_element)
+            print(f"DEBUG: 重复元数据元素处理完成，删除了 {metadata_removed_count} 个div表格")
+            break
+
+    if not table_element:
+        # 如果没有表格，尝试找面包屑
+        print("DEBUG: 未找到表格，尝试寻找面包屑")
+        breadcrumbs = []
+        for element in soup.find_all(['div', 'nav', 'p', 'span']):
+            if get_element_score(element) == 1:
+                breadcrumbs.append(element)
+                print(f"DEBUG: 找到面包屑: {clean_text(element.get_text())[:50]}")
+
+        if breadcrumbs:
+            # 使用第一个面包屑作为分界点
+            cutoff_element = breadcrumbs[0]
+            print("DEBUG: 以面包屑为分界点")
+        else:
+            print("DEBUG: 未找到任何header元素")
+            return '', str(soup)
+    else:
+        # 有表格，从表格开始向上扩散寻找面包屑
+        print(f"DEBUG: 从表格开始向上扩散寻找面包屑")
+
+        # 2. 从表格开始向上扩散寻找面包屑
+        found_breadcrumb_by_upward = False
+        current = table_element.parent
+
+        while current and current.name not in ['body', 'html', '[document]']:
+            # 检查当前层级的所有元素
+            for child in current.children:
+                if isinstance(child, Tag) and child != table_element:
+                    if get_element_score(child) == 1:  # 找到面包屑
+                        print(f"DEBUG: 向上扩散找到面包屑: {clean_text(child.get_text())[:50]}")
+                        found_breadcrumb_by_upward = True
+                        break
+            if found_breadcrumb_by_upward:
+                break
+            current = current.parent
+
+        # 3. 决定分界点
+        if found_breadcrumb_by_upward:
+            # 向上扩散找到面包屑，说明顺序是：面包屑 → 表格 → 正文
+            # 以表格为分界点
+            cutoff_element = table_element
+            print("DEBUG: 向上扩散找到面包屑，以表格为分界点（顺序：面包屑→表格→正文）")
+        else:
+            # 向上扩散没有找到面包屑，用正则匹配面包屑位置
+            print("DEBUG: 向上扩散未找到面包屑，使用正则匹配")
+
+            # 正则匹配面包屑特征
+            breadcrumb_patterns = [
+                r'[^>]*>[^>]*>[^>]*',  # 包含 > 的导航结构
+                r'.*?首页.*?>.*',     # 首页开头的导航
+                r'.*?当前位置.*',      # 包含当前位置
+                r'.*?位置[：:].*'      # 包含位置：
+            ]
+
+            found_breadcrumb_by_regex = False
+            breadcrumb_element = None
+
+            # 重新创建soup来查找（因为之前的soup可能被修改）
+            soup_for_regex = BeautifulSoup(html_content, 'html.parser')
+            remove_invisible_tags(soup_for_regex)
+
+            for pattern in breadcrumb_patterns:
+                matches = soup_for_regex.find_all(string=re.compile(pattern))
+                if matches:
+                    # 找到包含面包屑文本的元素
+                    for match in matches:
+                        parent = match.parent
+                        if parent and get_element_score(parent) == 1:
+                            print(f"DEBUG: 正则找到面包屑: {clean_text(parent.get_text())[:50]}")
+                            breadcrumb_element = parent
+                            found_breadcrumb_by_regex = True
+                            break
+                    if found_breadcrumb_by_regex:
+                        break
+
+            if found_breadcrumb_by_regex:
+                # 正则找到面包屑，说明面包屑在中间，回溯以面包屑为分界点
+                cutoff_element = breadcrumb_element
+                print("DEBUG: 正则匹配到面包屑，以面包屑为分界点（面包屑在中间）")
+            else:
+                # 正则也没找到面包屑，表格就是最上方的header
+                cutoff_element = table_element
+                print("DEBUG: 正则也未找到面包屑，表格是最上方的header")
+
+    # 4. 从分界点开始，提取所有header相关内容
+    # 策略：根据分界点类型，智能提取相关内容
+
+    # 如果是表格内部元素，提升到整个表格
+    # if cutoff_element.name in ['tr', 'td', 'th']:
+    #     # 从当前元素开始向上找最近的 <table>
+    #     current = cutoff_element
+    #     table_ancestor = None
+    #     while current and current.name != 'body':
+    #         if current.name == 'table':
+    #             table_ancestor = current
+    #             break
+    #         current = current.parent
+        
+    #     if table_ancestor:
+    #         cutoff_element = table_ancestor
+    # 使用beautifulsoup的方法
+    if cutoff_element.name in ['tr', 'td', 'th']:
+        table = cutoff_structure.find_parent('table')
+        if table:
+            cutoff_element = table
+
+    # 确保cutoff_element可以安全处理
+    try:
+        str(cutoff_element)
+    except Exception as e:
+        print(f"DEBUG: cutoff_element有问题，尝试使用文本内容: {e}")
+        # 如果cutoff_element有问题，提取其文本内容并创建新元素
+        text_content = cutoff_element.get_text() if hasattr(cutoff_element, 'get_text') else ''
+        if text_content:
+            cutoff_element = BeautifulSoup(f'<div>{text_content}</div>', 'html.parser').div
+        else:
+            print("DEBUG: 无法处理cutoff_element，返回空header")
+            return '', html_content
+
+    # 首先收集所有可能的header元素
+    all_header_elements = []
+
+    # 收集所有表格
+    for table in soup.find_all('table'):
+        if get_element_score(table) == 2:
+            # 检查表格是否可以安全转换为字符串
+            try:
+                str(table)
+                all_header_elements.append(table)
+            except:
+                print("DEBUG: 跳过有问题的表格元素")
+
+    # 收集所有面包屑
+    for element in soup.find_all(['div', 'nav', 'p', 'span']):
+        if get_element_score(element) == 1:
+            # 检查元素是否可以安全转换为字符串
+            try:
+                str(element)
+                all_header_elements.append(element)
+            except:
+                print("DEBUG: 跳过有问题的面包屑元素")
+
+    print(f"DEBUG: 总共找到 {len(all_header_elements)} 个header元素")
+
+    # 确定要提取的元素
+    elements_to_extract = []
+
+    # 如果分界点是表格，需要提取：
+    # 1. 表格本身
+    # 2. 表格上方的所有面包屑
+    if cutoff_element.name == 'table' or get_element_score(cutoff_element) == 2:
+        elements_to_extract.append(cutoff_element)
+        print("DEBUG: 分界点是表格，提取表格及上方面包屑")
+
+        # 查找表格上方的面包屑
+        for header_elem in all_header_elements:
+            if header_elem != cutoff_element and get_element_score(header_elem) == 1:
+                # 检查面包屑是否在表格上方
+                table_pos = html_content.find(str(cutoff_element))
+                breadcrumb_pos = html_content.find(str(header_elem))
+
+                if breadcrumb_pos < table_pos:
+                    elements_to_extract.append(header_elem)
+                    print(f"DEBUG: 添加表格上方的面包屑: {clean_text(header_elem.get_text())[:30]}")
+
+    # 如果分界点是面包屑，需要提取：
+    # 1. 面包屑本身
+    # 2. 面包屑上方的所有元素
+    elif get_element_score(cutoff_element) == 1:
+        elements_to_extract.append(cutoff_element)
+        print("DEBUG: 分界点是面包屑，提取面包屑及以上所有内容")
+
+        # 查找面包屑上方的所有header元素
+        for header_elem in all_header_elements:
+            if header_elem != cutoff_element:
+                breadcrumb_pos = html_content.find(str(cutoff_element))
+                elem_pos = html_content.find(str(header_elem))
+
+                if elem_pos < breadcrumb_pos:
+                    elements_to_extract.append(header_elem)
+                    print(f"DEBUG: 添加面包屑上方的元素: {clean_text(header_elem.get_text())[:30]}")
+
+    # 去重
+    elements_to_extract = list({id(elem): elem for elem in elements_to_extract}.values())
+
+    # 按在HTML中的位置排序
+    elements_to_extract.sort(key=lambda x: html_content.find(str(x)))
+
+    # 提取这些元素
+    header_parts = []
+    processed_ids = set()
+
+    for elem in elements_to_extract:
+        if id(elem) not in processed_ids:
+            # 直接提取元素，处理可能的None值
+            processed_ids.add(id(elem))
+            try:
+                elem_str = str(elem)
+                # 确保提取的内容不为空
+                if elem_str and elem_str.strip():
+                    header_parts.append(elem_str)
+                elem.decompose()
+            except Exception as e:
+                print(f"DEBUG: 提取元素时出错: {e}")
+                # 如果出错，尝试提取文本内容
+                try:
+                    text_content = elem.get_text() if hasattr(elem, 'get_text') else ''
+                    if text_content:
+                        # 创建一个简单的div包装文本
+                        header_parts.append(f'<div>{text_content}</div>')
+                    elem.decompose()
+                except:
+                    print(f"DEBUG: 无法提取元素内容，跳过")
+
+    header_html = '\n'.join(header_parts)
+    content_html = str(soup)
+
+    print(f"DEBUG: 提取了 {len(header_parts)} 个header元素")
+    print(f"DEBUG: header_html 内容预览: {header_html[:200] if header_html else '空'}")
+    print(f"DEBUG: header_html 完整长度: {len(header_html)}")
+
+    return header_html, content_html
+
+def clean_html_content_with_split(html_content: str) -> str:
+    """
+    清理HTML内容并分割header和content
+
+    返回: (header_content_html, cl_content_html, cl_content_md, cl_content_text)
+    """
+
+    # 首先分割header和content
+    # header_html, content_html = split_header_and_content(html_content)
+    header_html, content_html = split_header_and_content_v2(html_content)
+    cleand_header_html = clean_html_content_advanced(header_html)
+    # 然后对content部分进行高级清理
+    cleaned_content_html = clean_html_content_advanced(content_html)
+
+    # 将清理后的HTML转换为MD
+    content_md = html_to_markdown_simple(cleaned_content_html)
+
+    # 提取清理后HTML的纯文本内容
+    content_soup = BeautifulSoup(cleaned_content_html, 'html.parser')
+    content_text = clean_text(content_soup.get_text())
+
+    return cleand_header_html, cleaned_content_html, content_md, content_text
+
+# 2025.12.8新增结束---------------------------------
 
 # Pydantic模型
 class HTMLInput(BaseModel):
@@ -44,7 +837,14 @@ class MarkdownOutput(BaseModel):
     html_content: str  # 新增：提取的HTML内容
     xpath: str
     status: str
-    process_time:float
+    process_time: float
+    # 2025.12.5新增字段
+    header_content_html: str = ""  # 正文之上的内容HTML (暂时忽略)
+    cl_content_html: str = ""      # 清理过后的正文HTML
+    cl_content_md: str = ""        # 清理过后的正文MD
+    cl_content_text: str = ""      # 清理过后的正文纯文本
+    extract_success: bool = False     # 正文提取得到的数据是否可用
+    # 新增字段结束
 
 # 移除了浏览器相关的函数，现在只处理HTML内容
 def remove_header_footer_by_content_traceback(body):
@@ -224,7 +1024,6 @@ def preprocess_html_remove_interference(page_tree):
     else:
         # 如果没有body标签，尝试使用整个树
         body = page_tree
-        logger.warning("未找到body标签，使用整个HTML树")
     
     if body is None:
         logger.error("HTML解析失败，body为None")
@@ -730,78 +1529,117 @@ def find_article_container(page_tree):
 def extract_content_to_markdown(html_content: str):
     """
     从HTML内容中提取正文并转换为Markdown格式
-    
+
     Args:
         html_content: 输入的HTML内容字符串
-        
+
     Returns:
         dict: 包含markdown内容、xpath和状态的字典
     """
+    # 防御性编程：初始化所有返回变量，避免 UnboundLocalError
+    result = {
+        'markdown_content': '',
+        'html_content': '',
+        'xpath': '',
+        'status': 'failed'
+    }
+
     try:
+        # 验证输入参数
+        if not html_content or not isinstance(html_content, str):
+            logger.error("HTML内容为空或不是字符串类型")
+            return result
+
         # 解析HTML
         tree = html.fromstring(html_content)
-        
+
         # 获取主内容容器（从清理后的tree中获取）
         main_container, cleaned_body = find_article_container(tree)
-        
+
         if main_container is None or cleaned_body is None:
             logger.error("未找到主内容容器")
-            return {
-                'markdown_content': '',
-                'html_content': '',  # 未找到容器时返回空HTML
-                'xpath': '',
-                'status': 'failed'
-            }
-        
+            return result
+
         logger.info("✓ 使用清理后的HTML tree进行内容提取")
-        
-        # 生成XPath
-        xpath = generate_xpath(main_container)
-        
-        # 获取容器的HTML内容
-        container_html = html.tostring(main_container, encoding='unicode', pretty_print=True)
-        cleaned_container_html = clean_container_html(container_html)
-        # 转换为Markdown
-        markdown_content = markdownify.markdownify(
-            cleaned_container_html,
-            heading_style="ATX",  # 使用 # 格式的标题
-            bullets="-",  # 使用 - 作为列表符号
-            strip=['script', 'style']  # 第二次移除script和style标签（这里的清除效果貌似不是很好，script标签没有正确的去除）
-        )
-        
-        # 清理Markdown内容
-        markdown_content = clean_markdown_content(markdown_content)
-        
+
+        # 生成XPath - 确保变量总是有值
+        try:
+            xpath = generate_xpath(main_container)
+            if not xpath:
+                logger.warning("XPath生成为空，使用默认值")
+                xpath = ""
+        except Exception as e:
+            logger.error(f"生成XPath时出错: {e}")
+            xpath = ""
+
+        # 获取容器的HTML内容 - 确保变量总是有值
+        try:
+            container_html = html.tostring(main_container, encoding='unicode', pretty_print=True)
+            if not container_html:
+                logger.warning("容器HTML转换为空，使用原始内容")
+                container_html = html_content
+        except Exception as e:
+            logger.error(f"转换容器HTML时出错: {e}")
+            container_html = html_content
+
+        # 清理HTML内容 - 确保变量总是有值
+        try:
+            cleaned_container_html = clean_container_html(container_html)
+            if not cleaned_container_html:
+                logger.warning("HTML清理后为空，使用未清理的内容")
+                cleaned_container_html = container_html
+        except Exception as e:
+            logger.error(f"清理HTML内容时出错: {e}")
+            cleaned_container_html = container_html
+
+        # 转换为Markdown - 确保变量总是有值
+        try:
+            markdown_content = markdownify.markdownify(
+                cleaned_container_html,
+                heading_style="ATX",  # 使用 # 格式的标题
+                bullets="-",  # 使用 - 作为列表符号
+                strip=['script', 'style']  # 第二次移除script和style标签
+            )
+
+            # 清理Markdown内容
+            if markdown_content:
+                markdown_content = clean_markdown_content(markdown_content)
+            else:
+                logger.warning("Markdown转换为空")
+                markdown_content = ""
+
+        except Exception as e:
+            logger.error(f"转换为Markdown时出错: {e}")
+            markdown_content = ""
+
+        # 更新结果变量 - 确保所有字段都有明确的值
+        result.update({
+            'markdown_content': markdown_content,
+            'html_content': cleaned_container_html,
+            'xpath': xpath,
+            'status': 'success'
+        })
+
         logger.info(f"成功提取内容，XPath: {xpath}")
         logger.info(f"Markdown内容长度: {len(markdown_content)}")
         logger.info(f"HTML内容长度: {len(cleaned_container_html)}")
-        
-        return {
-            'markdown_content': markdown_content,
-            'html_content': cleaned_container_html,  # 返回清理后的HTML内容
-            'xpath': xpath,
-            'status': 'success'
-        }
-        
+
+        return result
+
     except Exception as e:
         import traceback
         error_msg = str(e) if str(e) else repr(e)
         logger.error(f"提取内容时出错: {error_msg}")
         logger.error(f"错误类型: {type(e).__name__}")
         logger.error(f"完整堆栈:\n{traceback.format_exc()}")
-        return {
-            'markdown_content': '',
-            'html_content': '',  # 错误时返回空HTML
-            'xpath': '',
-            'status': 'failed'
-        }
+
+        # 返回已初始化的失败结果，确保所有字段都有值
+        return result
 
 def clean_container_html(container_html: str) -> str:
     """
     清理html内容，删除script、style和js代码
     """
-    from bs4 import BeautifulSoup
-    import re
 
     if not container_html or not isinstance(container_html, str):
         return container_html or ""
@@ -834,6 +1672,7 @@ def clean_container_html(container_html: str) -> str:
             try:
                 element.decompose()
             except Exception as e:
+                logger.warning("clean_container_html删除失败了")
                 pass
         result = str(soup)
         
@@ -863,6 +1702,7 @@ def clean_container_html(container_html: str) -> str:
                 try:
                     del tag[attr]
                 except (AttributeError, KeyError):
+                    logger.warning("clean_container_html安全删除失败了")
                     pass  # 属性可能已被删除
         
         # 返回清理后的HTML
@@ -1006,7 +1846,7 @@ def find_main_content_in_cleaned_html(cleaned_body):
     long_content_containers = []
     
     for container, score in top_5_containers:
-        text_length = len(container.text_content().strip())
+        text_length = len(get_clean_text_content_lxml(container).strip())
         classes = container.get('class', '')
         elem_id = container.get('id', '')
         
@@ -1343,6 +2183,22 @@ def calculate_container_depth(container):
             break
     
     return depth
+def get_clean_text_content_lxml(container):
+    """获取lxml容器的干净文本内容，排除script和style标签"""
+    if container is None:
+        return ""
+
+    # 创建容器的副本以避免修改原始元素
+    container_copy = container.__copy__()
+
+    # 删除所有script和style标签及其内容
+    for elem in container_copy.xpath('//script | //style'):
+        elem.getparent().remove(elem)
+
+    # 获取清理后的文本内容
+    clean_text = container_copy.text_content()
+    return clean_text
+
 def calculate_content_container_score(container):
     """计算内容容器得分 - 专注于识别真正的内容区域，大幅度减分干扰标签"""
     if container is None:
@@ -1354,7 +2210,9 @@ def calculate_content_container_score(container):
 
     classes = container.get('class', '').lower()
     elem_id = container.get('id', '').lower()
-    text_content = container.text_content()
+
+    # 使用干净的文本内容，排除script和style
+    text_content = get_clean_text_content_lxml(container)
     text_content_lower = text_content.lower()  # 优化：只计算一次小写转换
     text_length = len(text_content.strip())
 
@@ -1767,8 +2625,8 @@ def find_middle_content(valid_children):
 def calculate_content_richness(container):
     """计算容器的内容丰富度"""
     score = 0
-    
-    text_content = container.text_content().strip()
+
+    text_content = get_clean_text_content_lxml(container).strip()
     content_length = len(text_content)
     
     if content_length > 1000:
@@ -1847,8 +2705,8 @@ def select_content_container(valid_children):
 def calculate_final_score(container):
     """计算最终容器得分"""
     score = 0
-    
-    text_content = container.text_content().strip()
+
+    text_content = get_clean_text_content_lxml(container).strip()
     content_length = len(text_content)
     
     if content_length > 500:
@@ -1906,8 +2764,8 @@ def find_main_content_area(containers):
 def calculate_main_content_score(container):
     """计算主内容区域得分"""
     score = 0
-    
-    text_content = container.text_content().strip()
+
+    text_content = get_clean_text_content_lxml(container).strip()
     content_length = len(text_content)
     
     # 内容长度是主要指标
@@ -2528,6 +3386,176 @@ def is_interference_identifier(identifier):
 # 移除了所有浏览器和文件处理相关的函数
 
 
+# 2025.12.5新增
+import json 
+def progressResult(json_str: dict) -> dict:
+    """
+    传入原本的4个字段，返回修改后的9个字段
+    # 原本输出字段为:
+        #   markdown_content:正文的md
+        #   html_content:正文的html
+        #   xpath:正文所在的xpath语句
+        #   elapsed:接口处理时间
+    # 新增字段为:
+        #   header_content_html: 正文之上的内容,包含: 标题 和 标题与正文中间的内容 的html 
+        # 
+        #   cl_content_html:     清理过后的正文html(去除标题和正文中间的无关内容,比如标题和打印还有时间等字,还有文章尾部的无关内容)
+        #                        这个html里面可能存在表格和其他内容 所以需要去除标签里面的属性,
+        # 
+        #   cl_content_md:       清理过后的正文md(同上)
+        # 
+        #   extract_success:     (true/false)正文提取得到的数据是否可用
+        # 
+        #   以上所有的md文本,遇到视频和表格时,将会保留清理过后的原本的html内容
+    """
+    try:
+        markdown_content = json_str.get("markdown_content", '')
+        html_contents = json_str.get("html_content", '')
+        xpath = json_str.get('xpath', '')
+        elapsed = json_str.get('elapsed', 0)
+
+        # 基础结果结构
+        result = {
+            'markdown_content': markdown_content,
+            'html_content': html_contents,
+            'xpath': xpath,
+            'elapsed': elapsed,
+            'header_content_html': '',  # 正文之上的内容HTML（包含索引号、主题分类等）
+            'cl_content_html': '',      # 清理后的正文HTML
+            'cl_content_md': '',        # 清理后的正文MD
+            'cl_content_text': '',      # 清理后的正文纯文本
+            'extract_success': False
+        }
+
+        if not html_contents.strip():
+            return result
+
+        # 使用新的内容分割和清理功能
+        header_content_html, cl_content_html, cl_content_md, cl_content_text = clean_html_content_with_split(html_contents)
+
+        # 判断是否有有效内容（正文长度大于50个字符）
+        extract_success = bool(
+            cl_content_md.strip() and
+            len(cl_content_md) > 50
+        )
+
+        # 更新结果，现在包含header_content_html
+        result.update({
+            'header_content_html': header_content_html,  # 包含索引号、主题分类等的header内容
+            'cl_content_html': cl_content_html,          # 清理后的正文HTML
+            'cl_content_md': cl_content_md,              # 清理后的正文MD
+            'cl_content_text': cl_content_text,          # 清理后的正文纯文本
+            'extract_success': extract_success
+        })
+
+        return result
+
+    except Exception as e:
+        # 如果处理出错，返回原始数据
+        import traceback
+        print(f"progressResult处理出错: {str(e)}")
+        print(f"错误堆栈: {traceback.format_exc()}")
+
+        # 尝试从原始数据中获取基础字段
+        try:
+            markdown_content = json_str.get('markdown_content', '') if isinstance(json_str, dict) else ''
+            html_content = json_str.get('html_content', '') if isinstance(json_str, dict) else ''
+            xpath = json_str.get('xpath', '') if isinstance(json_str, dict) else ''
+            elapsed = json_str.get('elapsed', 0) if isinstance(json_str, dict) else 0
+        except:
+            markdown_content = ''
+            html_content = ''
+            xpath = ''
+            elapsed = 0
+
+        return {
+            'markdown_content': markdown_content,
+            'html_content': html_content,
+            'xpath': xpath,
+            'elapsed': elapsed,
+            'header_content_html': '',  # 正文之上的内容HTML（包含索引号、主题分类等）
+            'cl_content_html': '',      # 清理后的正文HTML
+            'cl_content_md': '',        # 清理后的正文MD
+            'extract_success': False
+        }
+
+
+def clean_footer_content(html_content: str) -> str:
+    """清理HTML内容中的尾部无关内容"""
+    try:
+        soup = BeautifulSoup(html_content, 'html.parser')
+
+        # 定义尾部无关内容的特征
+        footer_patterns = [
+            r'网站说明',
+            r'网站标识码',
+            r'版权所有',
+            r'主办单位',
+            r'承办单位',
+            r'技术支持',
+            r'联系我们',
+            r'网站地图',
+            r'隐私政策',
+            r'免责声明',
+            r'备案号',
+            r'icp备案',
+            r'公安备案',
+            r'政府网站',
+            r'网站管理',
+            r'copyright',
+            r'all rights reserved',
+            r'powered by',
+            r'打印',
+            r'分享',
+            r'收藏',
+            r'扫一扫'
+        ]
+
+        # 移除包含尾部特征的元素
+        elements_to_remove = []
+        for element in soup.find_all(True):
+            text = element.get_text().strip().lower()
+            for pattern in footer_patterns:
+                if re.search(pattern, text, re.IGNORECASE):
+                    elements_to_remove.append(element)
+                    break
+
+        # 移除找到的元素
+        for element in elements_to_remove:
+            element.decompose()
+
+        return str(soup)
+
+    except Exception as e:
+        print(f"清理尾部内容时出错: {str(e)}")
+        return html_content
+
+
+def html_to_markdown_simple(html_content: str) -> str:
+    try:
+        if not html_content.strip():
+            return ''
+
+        converter = CustomMarkdownConverter(
+            heading_style="ATX",
+            bullets="*",
+            strip=['script', 'style']
+        )
+
+        markdown_content = converter.convert(html_content)
+
+        # 清理多余空行
+        markdown_content = re.sub(r'\n\s*\n\s*\n', '\n\n', markdown_content)
+
+        return markdown_content.strip()
+
+    except Exception as e:
+        print(f"HTML转Markdown时出错: {str(e)}")
+        return ''
+
+
+# 2025.12.5新增内容结束----------------------------------------
+
 # FastAPI路由
 @app.get("/")
 async def root():
@@ -2569,22 +3597,44 @@ async def extract_html_to_markdown(input_data: HTMLInput):
             raise HTTPException(status_code=400, detail="HTML内容不能为空")
         
         logger.info("开始处理HTML内容提取")
-        start_time = time.time()  # ⏱️ 开始计时
+        start_time = time.time()  # 开始计时
 
         # 提取内容并转换为Markdown
         result = extract_content_to_markdown(input_data.html_content)
-        end_time = time.time()  # ⏱️ 结束计时
-        elapsed = end_time - start_time
 
         if result['status'] == 'failed':
             raise HTTPException(status_code=422, detail="无法从HTML中提取有效内容")
-        
+
+        # 处理结果，添加新字段
+        final_result = progressResult(result)
+
+        end_time = time.time()  # 结束计时
+        elapsed = end_time - start_time
+
+        # 2025.12.5新加功能,在最后的结果字段上进行修改,切勿修改算法本体 注意,本次修改还重写了markdownify的video和table的转换器
+        # 输出字段为:
+        #   markdown_content:正文的md
+        #   html_content:正文的html
+        #   xpath:正文所在的xpath语句
+        #   process_time:接口处理时间
+        # 新增:
+        #   markdown_content_cl: 清理过后的正文md(去除标题和正文中间的无关内容,比如标题和打印还有时间等字,还有文章尾部的无关内容)
+        #   html_content_cl: 清理过后的正文HTML(同上)
+        #   header_content_html: 正文之上的内容,包含标题和 标题与正文中间的内容 的html
+        #   extract_success:(true/false)正文提取得到的数据是否可用
+
+        # 统一使用 final_result 作为数据源，确保逻辑清晰
         return MarkdownOutput(
-            markdown_content=result['markdown_content'],
-            html_content=result['html_content'],
-            xpath=result['xpath'],
-            status=result['status'],
-            process_time = elapsed
+            markdown_content=final_result.get('markdown_content', result['markdown_content']),
+            html_content=final_result.get('html_content', result['html_content']),
+            xpath=final_result.get('xpath', result['xpath']),
+            status=final_result.get('status', result['status']),
+            process_time=elapsed,
+            header_content_html=final_result.get('header_content_html', ''),
+            cl_content_html=final_result.get('cl_content_html', ''),
+            cl_content_md=final_result.get('cl_content_md', ''),
+            cl_content_text=final_result.get('cl_content_text',''),
+            extract_success=final_result.get('extract_success', False)
         )
         
     except HTTPException:
@@ -2635,20 +3685,9 @@ if __name__ == "__main__":
         #     driver_pool.close_all()
 
 
-# version1.0 
-
-# 一个页面中，存在k个列表，假定k=3，有三个列表，列表1为导航栏，里面有8个列表项，列表2为侧边栏，里面有5个列表项，列表3是事项列表，里面有7个列表项，
-# 此时，我的代码会把列表1作为目标获取，但实际情况应该是列表3才是正确的，这怎么办呢，
-# 目前对于目标列表3，可能存在以下特点：里面往往存在时间字符串，并且有些页面中的文字的长度是大于列表1和列表2的。
-# 除此之外，对于列表1，也有以下特点：当我们误获取这个列表1的时候，会去处理组装他的xpath，这个xpath里面往往是存在nav三个字母的，
-# 在我的观察下，大部分情况中，只要xpath里面包含nav，那就很大可能说明获取失败了，没有获取到列表3，而是获取到了列表1
-
-# 对于js页面，name中名称一定要准确，并且！name要尽量要少一点，比如“法定主动公开内容”，这个就写“法定”即可，这俩字有代表性，不能写“内容”这俩字，没有任何的代表性
-
-
-# version2.0
-# 2025.8.22
-# 修改部分算法的逻辑，可以提取正文所在容器，而不是v1.0中提取列表，目前算法用于定位页面的主体内容，通过不断的去排除头部导航和底部footer来逐渐的定位主体。但是，对于页面中内容是一大串的文字，或者是图片，这种情况下密度算法将会失效，我们需要尽可能的排除主HTML中head和footer（就是页面的导航栏和底部栏，这两个里面可能存在大量的列表或者一大串的文字）
-# 获取到的次HTML即为排除了干扰项的HTML内容，我们需要的container可能就存在于此，对于这个次级HTML，我们需要再一次的进行过滤，排除里面的header和footer，然后逐步缩小，但是不要精确，因为过于精确的获取容器会导致出现疏漏。
-
-# 对于算法的进一步修改，需要判断出一个合理的权重，即扣分标准。首先！一定是扣分的居多，加分的少，对于可能是底部或者首部的内容，要大量的减分，应该算法的主要思路就是排除干扰项！
+# 2025-12-8 想办法找到正文之上的内容 header_content_html
+# 我们的查找或者说扩散永远是向上扩散的，所以关键是找到正文上面的是表格还是面包屑，
+# 现在的情况是，代码可以正确的定位到表格的位置，此时向上扩散，如果找到了应该所属于
+# 面包屑的文字，就把表格以及表格之上的所有html都拿出来，如果向上扩散没有找到面包屑，
+# 那就说明表格是在上面的，
+# 面包屑在中间，此时要回溯，不去找表格，而是去找面包屑，找到后同样的向上扩散。
