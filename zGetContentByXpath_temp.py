@@ -14,50 +14,50 @@ import os
 from logging.handlers import RotatingFileHandler
 import datetime
 # 用于测试
-# def setup_logging():
-#     """设置日志配置 - 输出到带时间戳的日志文件 + 控制台"""
-#     # 生成时间戳文件名
-#     log_dir = "logs"
-#     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-#     log_file = os.path.join(log_dir, f"xpath_processing_{timestamp}.log")
-    
-#     # 创建日志目录
-#     os.makedirs(log_dir, exist_ok=True)
-    
-#     # Handler: 文件（可选轮转）+ 控制台
-#     file_handler = logging.FileHandler(log_file, encoding='utf-8')
-#     console_handler = logging.StreamHandler()
-    
-#     # 日志格式
-#     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-#     file_handler.setFormatter(formatter)
-#     console_handler.setFormatter(formatter)
-    
-#     # 配置 logger
-#     logging.basicConfig(
-#         level=logging.DEBUG,
-#         handlers=[file_handler, console_handler]
-#     )
-    
-#     return logging.getLogger(__name__)
-# 用于部署
-# 配置日志 - 高并发优化版本
 def setup_logging():
-    """设置日志配置 - 减少IO开销"""
-    # 生产环境只记录WARNING及以上级别
-    log_level = logging.WARNING  # 从INFO改为WARNING
+    """设置日志配置 - 输出到带时间戳的日志文件 + 控制台"""
+    # 生成时间戳文件名
+    log_dir = "logs"
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = os.path.join(log_dir, f"xpath_processing_{timestamp}.log")
     
-    # 配置日志格式（简化格式）
+    # 创建日志目录
+    os.makedirs(log_dir, exist_ok=True)
+    
+    # Handler: 文件（可选轮转）+ 控制台
+    file_handler = logging.FileHandler(log_file, encoding='utf-8')
+    console_handler = logging.StreamHandler()
+    
+    # 日志格式
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(formatter)
+    console_handler.setFormatter(formatter)
+    
+    # 配置 logger
     logging.basicConfig(
-        level=log_level,
-        format='%(levelname)s - %(message)s',  # 简化格式
-        handlers=[
-            logging.StreamHandler()  # 只输出到控制台，减少文件IO
-        ]
+        level=logging.DEBUG,
+        handlers=[file_handler, console_handler]
     )
     
     return logging.getLogger(__name__)
-# 初始化日志
+# 用于部署
+# 配置日志 - 高并发优化版本
+# def setup_logging():
+#     """设置日志配置 - 减少IO开销"""
+#     # 生产环境只记录WARNING及以上级别
+#     log_level = logging.WARNING  # 从INFO改为WARNING
+    
+#     # 配置日志格式（简化格式）
+#     logging.basicConfig(
+#         level=log_level,
+#         format='%(levelname)s - %(message)s',  # 简化格式
+#         handlers=[
+#             logging.StreamHandler()  # 只输出到控制台，减少文件IO
+#         ]
+#     )
+    
+#     return logging.getLogger(__name__)
+# # 初始化日志
 logger = setup_logging()
 
 # FastAPI应用
@@ -160,7 +160,7 @@ def delete_short_tags(soup: BeautifulSoup, tag_text: str) -> None:
             if tag_text in parent_text:
                 # 进一步检查，确保不是正文中的内容
                 # 如果父标签是span、div等容器标签，且文本很短，很可能是导航或功能按钮
-                if parent.name in ['span', 'div', 'a', 'button', 'p','dt','li','h4'] and not any(
+                if parent.name in ['span', 'div', 'a', 'button', 'p','dt','li','h4','font'] and not any(
                     keyword in parent_text.lower()
                     for keyword in ['文章', '内容', '正文', '详情', '更多信息']
                 ):
@@ -416,12 +416,12 @@ def remove_duplicate_metadata_elements(soup, table_element):
     if not table_text:
         return soup, 0
 
-    print(f"DEBUG: Table表格文本内容: {table_text[:150]}...")
+    logger.debug(f"DEBUG: Table表格文本内容: {table_text[:150]}...")
 
     # 定义需要匹配的元数据关键词
     metadata_keywords = [
         '发文机关', '发文字号', '发文日期', '成文日期', '发布日期', '主题分类',
-        '公文种类', '来源', '索引号', '标题', '文号', '签发人'
+        '公文种类', '来源', '索引号', '标题', '文号', '签发人','发布机构','体裁分类','组配分类'
     ]
 
     # 从表格文本中提取包含关键词的完整短语
@@ -435,17 +435,17 @@ def remove_duplicate_metadata_elements(soup, table_element):
             cleaned_match = clean_text(match)
             if len(cleaned_match) > 5:  # 至少5个字符才有意义
                 extracted_phrases.append(cleaned_match)
-                print(f"DEBUG: 提取到元数据短语: {cleaned_match}")
+                logger.debug(f"DEBUG: 提取到元数据短语: {cleaned_match}")
 
     if not extracted_phrases:
-        print("DEBUG: 未从表格中提取到有效的元数据短语")
+        logger.debug("DEBUG: 未从表格中提取到有效的元数据短语")
         return soup, 0
 
     removed_count = 0
 
     # 专门查找div元素中的重复内容
     for phrase in extracted_phrases:
-        print(f"DEBUG: 正在div中搜索短语: {phrase}")
+        logger.debug(f"DEBUG: 正在div中搜索短语: {phrase}")
 
         # 搜索包含该短语的div元素
         matching_divs = []
@@ -460,7 +460,7 @@ def remove_duplicate_metadata_elements(soup, table_element):
             div_text = clean_text(div.get_text())
             if phrase in div_text:
                 matching_divs.append(div)
-                print(f"DEBUG: 在div中找到匹配短语: {div_text[:100]}...")
+                logger.debug(f"DEBUG: 在div中找到匹配短语: {div_text[:100]}...")
 
         for tbody in all_tables:
             # 更严格地检查：不能是原始表格本身，也不能是原始表格的子元素
@@ -470,7 +470,7 @@ def remove_duplicate_metadata_elements(soup, table_element):
             tbody_text = clean_text(tbody.get_text())
             if phrase in tbody_text:
                 matching_divs.append(tbody)
-                print(f"DEBUG: 在tbody中找到匹配短语: {tbody_text[:100]}...")
+                logger.debug(f"DEBUG: 在tbody中找到匹配短语: {tbody_text[:100]}...")
 
         # 对匹配的div进行进一步筛选
         for div in matching_divs:
@@ -482,14 +482,14 @@ def remove_duplicate_metadata_elements(soup, table_element):
 
             # 如果div包含多个元数据关键词或多个匹配短语，认为是重复的div表格
             if keyword_count >= 2 or matched_phrases_count >= 2:
-                print(f"DEBUG: 找到重复div表格，包含{keyword_count}个关键词，{matched_phrases_count}个匹配短语")
-                print(f"DEBUG: div表格内容: {div_text[:100]}...")
+                logger.debug(f"DEBUG: 找到重复div表格，包含{keyword_count}个关键词，{matched_phrases_count}个匹配短语")
+                logger.debug(f"DEBUG: div表格内容: {div_text[:100]}...")
                 div.decompose()
                 removed_count += 1
             else:
-                print(f"DEBUG: div匹配但元数据较少，保留")
+                logger.debug(f"DEBUG: div匹配但元数据较少，保留")
 
-    print(f"DEBUG: 总共删除了 {removed_count} 个重复div表格")
+    logger.debug(f"DEBUG: 总共删除了 {removed_count} 个重复div表格")
     return soup, removed_count
 
 def clean_text(text: str) -> str:
@@ -506,12 +506,12 @@ def get_element_score(element) -> int:
         
     text = clean_text(element.get_text())
     if not text: return 0
-    # print(f"fuck的文本长度为：{len(text)}")
+    # logger.debug(f"get_element_score的文本长度为：{len(text)}")
     # 排除长文本（防止误判正文）
     if len(text) > 700: return 0
-
+    # print(text[:50])
     # 1. 强特征：元数据 (Table/Div)
-    meta_keywords = ['索引号', '主题分类', '发文字号', '发文机关', '成文日期', '发布日期', '公文种类', '浏览次数', '来源：', '来源:']
+    meta_keywords = ['索引号', '主题分类', '发文字号', '发文机关','发文机构', '文号','组配分类','成文日期', '发布日期', '公文种类', '浏览次数', '来源：', '来源:']
     if sum(1 for kw in meta_keywords if kw in text) >= 1:
         # 如果包含两个以上关键词，或者是一个特定的表格
         if sum(1 for kw in meta_keywords if kw in text) >= 2 or element.name == 'table':
@@ -576,36 +576,41 @@ def split_header_and_content_v2(html_content: str) -> tuple[str, str]:
             table_element = table
             # 处理重复的元数据元素（删除重复的div表格）
             soup, metadata_removed_count = remove_duplicate_metadata_elements(soup, table_element)
-            print(f"DEBUG: 重复元数据元素处理完成，删除了 {metadata_removed_count} 个div表格")
+            logger.debug(f"DEBUG: 重复元数据元素处理完成，删除了 {metadata_removed_count} 个div表格")
             break
     # 2025.12.9不想干了！
     # 针对于表格的html为div格式的勾八前端代码！TODO:可能造成正文被提取到了header里面
     divs = soup.find_all('div')
     for div in divs:
         if get_element_score(div) == 2:
-            print("找到div格式的表格！")
+            logger.debug("找到div格式的表格！")
             table_element = div
 
+    uls = soup.find_all('ul')
+    for ul in uls:
+        if get_element_score(ul) == 2:
+            logger.debug("找到ul格式的表格！")
+            table_element = ul
 
     if not table_element:
         # 如果没有表格，尝试找面包屑
-        print("DEBUG: 未找到表格，尝试寻找面包屑")
+        logger.debug("DEBUG: 未找到表格，尝试寻找面包屑")
         breadcrumbs = []
         for element in soup.find_all(['div', 'nav', 'p', 'span']):
             if get_element_score(element) == 1:
                 breadcrumbs.append(element)
-                print(f"DEBUG: 找到面包屑: {clean_text(element.get_text())[:50]}")
+                logger.debug(f"DEBUG: 找到面包屑: {clean_text(element.get_text())[:50]}")
 
         if breadcrumbs:
             # 使用第一个面包屑作为分界点
             cutoff_element = breadcrumbs[0]
-            print("DEBUG: 以面包屑为分界点")
+            logger.debug("DEBUG: 以面包屑为分界点")
         else:
-            print("DEBUG: 未找到任何header元素")
+            logger.debug("DEBUG: 未找到任何header元素")
             return '', str(soup)
     else:
         # 有表格，从表格开始向上扩散寻找面包屑
-        print(f"DEBUG: 从表格开始向上扩散寻找面包屑")
+        logger.debug(f"DEBUG: 从表格开始向上扩散寻找面包屑")
 
         # 2. 从表格开始向上扩散寻找面包屑
         found_breadcrumb_by_upward = False
@@ -616,7 +621,7 @@ def split_header_and_content_v2(html_content: str) -> tuple[str, str]:
             for child in current.children:
                 if isinstance(child, Tag) and child != table_element:
                     if get_element_score(child) == 1:  # 找到面包屑
-                        print(f"DEBUG: 向上扩散找到面包屑: {clean_text(child.get_text())[:50]}")
+                        logger.debug(f"DEBUG: 向上扩散找到面包屑: {clean_text(child.get_text())[:50]}")
                         found_breadcrumb_by_upward = True
                         break
             if found_breadcrumb_by_upward:
@@ -628,10 +633,10 @@ def split_header_and_content_v2(html_content: str) -> tuple[str, str]:
             # 向上扩散找到面包屑，说明顺序是：面包屑 → 表格 → 正文
             # 以表格为分界点
             cutoff_element = table_element
-            print("DEBUG: 向上扩散找到面包屑，以表格为分界点（顺序：面包屑→表格→正文）")
+            logger.debug("DEBUG: 向上扩散找到面包屑，以表格为分界点（顺序：面包屑→表格→正文）")
         else:
             # 向上扩散没有找到面包屑，用正则匹配面包屑位置
-            print("DEBUG: 向上扩散未找到面包屑，使用正则匹配")
+            logger.debug("DEBUG: 向上扩散未找到面包屑，使用正则匹配")
 
             # 正则匹配面包屑特征
             breadcrumb_patterns = [
@@ -655,7 +660,7 @@ def split_header_and_content_v2(html_content: str) -> tuple[str, str]:
                     for match in matches:
                         parent = match.parent
                         if parent and get_element_score(parent) == 1:
-                            print(f"DEBUG: 正则找到面包屑: {clean_text(parent.get_text())[:50]}")
+                            logger.debug(f"DEBUG: 正则找到面包屑: {clean_text(parent.get_text())[:50]}")
                             breadcrumb_element = parent
                             found_breadcrumb_by_regex = True
                             break
@@ -665,11 +670,11 @@ def split_header_and_content_v2(html_content: str) -> tuple[str, str]:
             if found_breadcrumb_by_regex:
                 # 正则找到面包屑，说明面包屑在中间，回溯以面包屑为分界点
                 cutoff_element = breadcrumb_element
-                print("DEBUG: 正则匹配到面包屑，以面包屑为分界点（面包屑在中间）")
+                logger.debug("DEBUG: 正则匹配到面包屑，以面包屑为分界点（面包屑在中间）")
             else:
                 # 正则也没找到面包屑，表格就是最上方的header
                 cutoff_element = table_element
-                print("DEBUG: 正则也未找到面包屑，表格是最上方的header")
+                logger.debug("DEBUG: 正则也未找到面包屑，表格是最上方的header")
 
     # 4. 从分界点开始，提取所有header相关内容
     # 策略：根据分界点类型，智能提取相关内容
@@ -697,13 +702,13 @@ def split_header_and_content_v2(html_content: str) -> tuple[str, str]:
     try:
         str(cutoff_element)
     except Exception as e:
-        print(f"DEBUG: cutoff_element有问题，尝试使用文本内容: {e}")
+        logger.debug(f"DEBUG: cutoff_element有问题，尝试使用文本内容: {e}")
         # 如果cutoff_element有问题，提取其文本内容并创建新元素
         text_content = cutoff_element.get_text() if hasattr(cutoff_element, 'get_text') else ''
         if text_content:
             cutoff_element = BeautifulSoup(f'<div>{text_content}</div>', 'html.parser').div
         else:
-            print("DEBUG: 无法处理cutoff_element，返回空header")
+            logger.debug("DEBUG: 无法处理cutoff_element，返回空header")
             return '', html_content
 
     # 首先收集所有可能的header元素
@@ -717,7 +722,7 @@ def split_header_and_content_v2(html_content: str) -> tuple[str, str]:
                 str(table)
                 all_header_elements.append(table)
             except:
-                print("DEBUG: 跳过有问题的表格元素")
+                logger.debug("DEBUG: 跳过有问题的表格元素")
 
     # 收集所有面包屑
     for element in soup.find_all(['div', 'nav', 'p', 'span']):
@@ -727,9 +732,9 @@ def split_header_and_content_v2(html_content: str) -> tuple[str, str]:
                 str(element)
                 all_header_elements.append(element)
             except:
-                print("DEBUG: 跳过有问题的面包屑元素")
+                logger.debug("DEBUG: 跳过有问题的面包屑元素")
 
-    print(f"DEBUG: 总共找到 {len(all_header_elements)} 个header元素")
+    logger.debug(f"DEBUG: 总共找到 {len(all_header_elements)} 个header元素")
 
     # 确定要提取的元素
     elements_to_extract = []
@@ -739,7 +744,7 @@ def split_header_and_content_v2(html_content: str) -> tuple[str, str]:
     # 2. 表格上方的所有面包屑
     if cutoff_element.name == 'table' or cutoff_element.name == 'div' or get_element_score(cutoff_element) == 2:
         elements_to_extract.append(cutoff_element)
-        print("DEBUG: 分界点是表格，提取表格及上方面包屑")
+        logger.debug("DEBUG: 分界点是表格，提取表格及上方面包屑")
 
         # 查找表格上方的面包屑
         for header_elem in all_header_elements:
@@ -750,14 +755,14 @@ def split_header_and_content_v2(html_content: str) -> tuple[str, str]:
 
                 if breadcrumb_pos < table_pos:
                     elements_to_extract.append(header_elem)
-                    print(f"DEBUG: 添加表格上方的面包屑: {clean_text(header_elem.get_text())[:30]}")
+                    logger.debug(f"DEBUG: 添加表格上方的面包屑: {clean_text(header_elem.get_text())[:30]}")
 
     # 如果分界点是面包屑，需要提取：
     # 1. 面包屑本身
     # 2. 面包屑上方的所有元素
     elif get_element_score(cutoff_element) == 1:
         elements_to_extract.append(cutoff_element)
-        print("DEBUG: 分界点是面包屑，提取面包屑及以上所有内容")
+        logger.debug("DEBUG: 分界点是面包屑，提取面包屑及以上所有内容")
 
         # 查找面包屑上方的所有header元素
         for header_elem in all_header_elements:
@@ -767,7 +772,7 @@ def split_header_and_content_v2(html_content: str) -> tuple[str, str]:
 
                 if elem_pos < breadcrumb_pos:
                     elements_to_extract.append(header_elem)
-                    print(f"DEBUG: 添加面包屑上方的元素: {clean_text(header_elem.get_text())[:30]}")
+                    logger.debug(f"DEBUG: 添加面包屑上方的元素: {clean_text(header_elem.get_text())[:30]}")
 
     # 去重
     elements_to_extract = list({id(elem): elem for elem in elements_to_extract}.values())
@@ -790,7 +795,7 @@ def split_header_and_content_v2(html_content: str) -> tuple[str, str]:
                     header_parts.append(elem_str)
                 elem.decompose()
             except Exception as e:
-                print(f"DEBUG: 提取元素时出错: {e}")
+                logger.debug(f"DEBUG: 提取元素时出错: {e}")
                 # 如果出错，尝试提取文本内容
                 try:
                     text_content = elem.get_text() if hasattr(elem, 'get_text') else ''
@@ -799,14 +804,14 @@ def split_header_and_content_v2(html_content: str) -> tuple[str, str]:
                         header_parts.append(f'<div>{text_content}</div>')
                     elem.decompose()
                 except:
-                    print(f"DEBUG: 无法提取元素内容，跳过")
+                    logger.debug(f"DEBUG: 无法提取元素内容，跳过")
 
     header_html = '\n'.join(header_parts)
     content_html = str(soup)
 
-    print(f"DEBUG: 提取了 {len(header_parts)} 个header元素")
-    print(f"DEBUG: header_html 内容预览: {header_html[:200] if header_html else '空'}")
-    print(f"DEBUG: header_html 完整长度: {len(header_html)}")
+    logger.debug(f"DEBUG: 提取了 {len(header_parts)} 个header元素")
+    logger.debug(f"DEBUG: header_html 内容预览: {header_html[:200] if header_html else '空'}")
+    logger.debug(f"DEBUG: header_html 完整长度: {len(header_html)}")
 
     return header_html, content_html
 
@@ -974,14 +979,14 @@ def find_header_footer_container(element):
         # 首部内容特征关键词
         header_content_keywords = [
             '登录', '注册', '首页', '主页', '无障碍',  '办事',  '无障碍浏览','打印','收藏','机构概况','在线服务','互动交流', 
-            '走进', '移动版', '手机版', '导航', '菜单', '搜索', '市政府'
+            '走进', '移动版', '手机版', '导航', '菜单', '搜索', '市政府','读屏专用','ALT+Shift'
         ]
         
         # 尾部内容特征关键词
         footer_content_keywords = [
             '网站说明', '网站标识码', '版权所有', '主办单位', '承办单位', 
             '技术支持', '联系我们', '网站地图', '隐私政策', '免责声明',
-            '备案号', 'icp', '公安备案', '政府网站', '网站管理'
+            '备案号', 'icp', '公安备案', '政府网站', '网站管理','退出服务','鼠标样式','阅读方式'
         ]
         
         # 检查是否包含多个首部或尾部关键词
@@ -1531,7 +1536,7 @@ def find_article_container(page_tree):
 
     # 获取原始的body用于检查
     original_body = page_tree.xpath("//body")
-    print(f"original_body is {original_body}")
+    logger.debug(f"original_body is {original_body}")
     original_body = original_body[0] if original_body else None
 
     main_content = find_main_content_in_cleaned_html(cleaned_body, original_body)
@@ -1753,7 +1758,7 @@ def clean_container_html(container_html: str) -> str:
         
     except Exception as e:
         # 如果发生错误，返回原始内容或空字符串
-        print(f"清理HTML时出错: {e}")
+        logger.debug(f"清理HTML时出错: {e}")
         return container_html
 def clean_markdown_content(markdown_content: str) -> str:
     """
@@ -1816,14 +1821,14 @@ def find_main_content_in_cleaned_html(cleaned_body, original_body=None):
             
         score = calculate_content_container_score(container)
         
-        # 强保护：检查是否包含 printContent 或其他重要内容
+        # 强保护：检查是否包含 logger.debugContent 或其他重要内容
         classes = container.get('class', '').lower()
         elem_id = container.get('id', '').lower()
         
         # 绝对保护的条件
         is_protected = (
-            'printcontent' in elem_id.lower() or  # printContent ID
-            container.xpath(".//*[@id='printContent' or @id='printcontent']") or  # 包含 printContent 子元素
+            'logger.debugcontent' in elem_id.lower() or  # logger.debugContent ID
+            container.xpath(".//*[@id='logger.debugContent' or @id='logger.debugcontent']") or  # 包含 logger.debugContent 子元素
             'bg-fff' in classes or  # 常见的内容容器类名
             'container' in classes and len(container.xpath(".//*")) > 20  # 大型容器且子元素多
         )
@@ -2093,6 +2098,7 @@ def find_main_content_in_cleaned_html(cleaned_body, original_body=None):
             if text_length > 0:
                 links = best_container.xpath(".//a")
                 link_count = len(links)
+                logger.info(f"是否包含大量链接，链接数量为：{link_count}")
                 # 判断是否有大量链接（与评分函数第2445-2446行逻辑一致）
                 if link_count > 7:
                     have_muchLinks = True
@@ -2124,7 +2130,7 @@ def find_main_content_in_cleaned_html(cleaned_body, original_body=None):
     # if final_class and original_body is not None:
     #     # 检查原始body标签是否使用了相同的class
     #     body_class = original_body.get('class', '')
-    #     print(body_class)
+    #     logger.debug(body_class)
     #     if body_class == final_class:
     #         logger.info(f"   ⚠ 检测到选择的容器class与body标签相同，回退到分数最高的容器")
     #         # 回退到分数最高的容器
@@ -2323,8 +2329,8 @@ def calculate_content_container_score(container):
     if 'display' in style and 'none' in style:
         score -= 1000  # 极大减分，基本排除
         debug_info.append("❌ display:none 不可见元素: -1000")
-        logger.warning(f"⚠️ 警告：在评分阶段发现 display:none 元素（应该已被删除）")
-        logger.warning(f"   元素: {container.tag} id='{elem_id[:30]}' class='{classes[:30]}'")
+        # logger.warning(f"⚠️ 警告：在评分阶段发现 display:none 元素（应该已被删除）")
+        # logger.warning(f"   元素: {container.tag} id='{elem_id[:30]}' class='{classes[:30]}'")
         logger.info("❌ 发现 display:none，这是不可见元素，直接排除")
         logger.info(f"最终得分: {score}")
         return score
@@ -2343,13 +2349,13 @@ def calculate_content_container_score(container):
         current = current.getparent()
         depth += 1
 
-    # # 特殊ID加分 - printContent通常是主要内容区域
-    # special_id_keywords = ['printcontent', 'printContent']
+    # # 特殊ID加分 - logger.debugContent通常是主要内容区域
+    # special_id_keywords = ['logger.debugcontent', 'logger.debugContent']
     # for keyword in special_id_keywords:
     #     if keyword.lower() in elem_id.lower():
-    #         if 'printcontent' in keyword.lower():
-    #             score += 200  # printContent给最高分
-    #             debug_info.append("✓ printContent ID特征: +200")
+    #         if 'logger.debugcontent' in keyword.lower():
+    #             score += 200  # logger.debugContent给最高分
+    #             debug_info.append("✓ logger.debugContent ID特征: +200")
     #         else:
     #             score += 100  # 其他内容ID也给高分
     #             debug_info.append(f"✓ 内容ID特征: +100 ({keyword})")
@@ -2455,7 +2461,7 @@ def calculate_content_container_score(container):
         '网站说明', '网站标识码', '版权所有', '主办单位', '承办单位', 
         '技术支持', '联系我们', '网站地图', '隐私政策', '免责声明',
         '备案号', 'icp', '公安备案', '政府网站', '网站管理',
-        'copyright', 'all rights reserved', 'powered by', 'designed by'
+        'copyright', 'all rights reserved', 'powered by', 'designed by','十字线','鼠标样式','读屏专用','ALT+Shift'
     ]
     
     # 详细记录找到的关键词 - 使用缓存的小写文本
@@ -3554,8 +3560,8 @@ def progressResult(json_str: dict) -> dict:
     except Exception as e:
         # 如果处理出错，返回原始数据
         import traceback
-        print(f"progressResult处理出错: {str(e)}")
-        print(f"错误堆栈: {traceback.format_exc()}")
+        logger.debug(f"progressResult处理出错: {str(e)}")
+        logger.debug(f"错误堆栈: {traceback.format_exc()}")
 
         # 尝试从原始数据中获取基础字段
         try:
@@ -3628,7 +3634,7 @@ def clean_footer_content(html_content: str) -> str:
         return str(soup)
 
     except Exception as e:
-        print(f"清理尾部内容时出错: {str(e)}")
+        logger.debug(f"清理尾部内容时出错: {str(e)}")
         return html_content
 
 
@@ -3651,7 +3657,7 @@ def html_to_markdown_simple(html_content: str) -> str:
         return markdown_content.strip()
 
     except Exception as e:
-        print(f"HTML转Markdown时出错: {str(e)}")
+        logger.debug(f"HTML转Markdown时出错: {str(e)}")
         return ''
 
 
@@ -3719,8 +3725,8 @@ async def extract_html_to_markdown(input_data: HTMLInput):
         #   xpath:正文所在的xpath语句
         #   process_time:接口处理时间
         # 新增:
-        #   markdown_content_cl: 清理过后的正文md(去除标题和正文中间的无关内容,比如标题和打印还有时间等字,还有文章尾部的无关内容)
-        #   html_content_cl: 清理过后的正文HTML(同上)
+        #   cl_content_md: 清理过后的正文md(去除标题和正文中间的无关内容,比如标题和打印还有时间等字,还有文章尾部的无关内容)
+        #   cl_content_html: 清理过后的正文HTML(同上)
         #   header_content_html: 正文之上的内容,包含标题和 标题与正文中间的内容 的html
         #   extract_success:(true/false)正文提取得到的数据是否可用
 
@@ -3758,9 +3764,9 @@ if __name__ == "__main__":
     
     if len(sys.argv) > 1 and sys.argv[1] == "api":
         # 启动API服务器
-        print("启动HTML to Markdown API服务器...")
-        print("API文档: http://localhost:8321/docs")
-        print("健康检查: http://localhost:8321/health")
+        logger.debug("启动HTML to Markdown API服务器...")
+        logger.debug("API文档: http://localhost:8321/docs")
+        logger.debug("健康检查: http://localhost:8321/health")
         start_server()
     # else:
     #     # 原有的文件处理逻辑（保留向后兼容）
