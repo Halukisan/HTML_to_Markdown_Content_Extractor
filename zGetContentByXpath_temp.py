@@ -13,34 +13,50 @@ import logging
 import os
 from logging.handlers import RotatingFileHandler
 import datetime
-
+# 用于测试
+# def setup_logging():
+#     """设置日志配置 - 输出到带时间戳的日志文件 + 控制台"""
+#     # 生成时间戳文件名
+#     log_dir = "logs"
+#     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+#     log_file = os.path.join(log_dir, f"xpath_processing_{timestamp}.log")
+    
+#     # 创建日志目录
+#     os.makedirs(log_dir, exist_ok=True)
+    
+#     # Handler: 文件（可选轮转）+ 控制台
+#     file_handler = logging.FileHandler(log_file, encoding='utf-8')
+#     console_handler = logging.StreamHandler()
+    
+#     # 日志格式
+#     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+#     file_handler.setFormatter(formatter)
+#     console_handler.setFormatter(formatter)
+    
+#     # 配置 logger
+#     logging.basicConfig(
+#         level=logging.DEBUG,
+#         handlers=[file_handler, console_handler]
+#     )
+    
+#     return logging.getLogger(__name__)
+# 用于部署
+# 配置日志 - 高并发优化版本
 def setup_logging():
-    """设置日志配置 - 输出到带时间戳的日志文件 + 控制台"""
-    # 生成时间戳文件名
-    log_dir = "logs"
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_file = os.path.join(log_dir, f"xpath_processing_{timestamp}.log")
+    """设置日志配置 - 减少IO开销"""
+    # 生产环境只记录WARNING及以上级别
+    log_level = logging.WARNING  # 从INFO改为WARNING
     
-    # 创建日志目录
-    os.makedirs(log_dir, exist_ok=True)
-    
-    # Handler: 文件（可选轮转）+ 控制台
-    file_handler = logging.FileHandler(log_file, encoding='utf-8')
-    console_handler = logging.StreamHandler()
-    
-    # 日志格式
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    file_handler.setFormatter(formatter)
-    console_handler.setFormatter(formatter)
-    
-    # 配置 logger
+    # 配置日志格式（简化格式）
     logging.basicConfig(
-        level=logging.DEBUG,
-        handlers=[file_handler, console_handler]
+        level=log_level,
+        format='%(levelname)s - %(message)s',  # 简化格式
+        handlers=[
+            logging.StreamHandler()  # 只输出到控制台，减少文件IO
+        ]
     )
     
     return logging.getLogger(__name__)
-
 # 初始化日志
 logger = setup_logging()
 
@@ -144,7 +160,7 @@ def delete_short_tags(soup: BeautifulSoup, tag_text: str) -> None:
             if tag_text in parent_text:
                 # 进一步检查，确保不是正文中的内容
                 # 如果父标签是span、div等容器标签，且文本很短，很可能是导航或功能按钮
-                if parent.name in ['span', 'div', 'a', 'button', 'p','dt','li'] and not any(
+                if parent.name in ['span', 'div', 'a', 'button', 'p','dt','li','h4'] and not any(
                     keyword in parent_text.lower()
                     for keyword in ['文章', '内容', '正文', '详情', '更多信息']
                 ):
@@ -284,7 +300,7 @@ def clean_html_content_advanced(html_content: str) -> str:
         tags_to_delete = [
             "已阅","字号", "打印", "关闭", "收藏","分享到微信","分享","字体","小","中","大","s92及gd格式的文件请用SEP阅读工具",
             "扫一扫在手机打开当前页", "扫一扫在手机上查看当前页面","用微信“扫一扫”","分享给您的微信好友",
-            "相关链接",'下载文字版','下载图片版','扫一扫在手机打开当前页面'
+            "相关链接",'下载文字版','下载图片版','扫一扫在手机打开当前页面',"微信扫一扫：分享","上一篇","下一篇"
         ]
 
         for tag_text in tags_to_delete:
@@ -490,9 +506,9 @@ def get_element_score(element) -> int:
         
     text = clean_text(element.get_text())
     if not text: return 0
-    
+    # print(f"fuck的文本长度为：{len(text)}")
     # 排除长文本（防止误判正文）
-    if len(text) > 800: return 0
+    if len(text) > 700: return 0
 
     # 1. 强特征：元数据 (Table/Div)
     meta_keywords = ['索引号', '主题分类', '发文字号', '发文机关', '成文日期', '发布日期', '公文种类', '浏览次数', '来源：', '来源:']
@@ -563,7 +579,7 @@ def split_header_and_content_v2(html_content: str) -> tuple[str, str]:
             print(f"DEBUG: 重复元数据元素处理完成，删除了 {metadata_removed_count} 个div表格")
             break
     # 2025.12.9不想干了！
-    # 针对于表格的html为div格式的勾八前端代码！
+    # 针对于表格的html为div格式的勾八前端代码！TODO:可能造成正文被提取到了header里面
     divs = soup.find_all('div')
     for div in divs:
         if get_element_score(div) == 2:
@@ -1508,12 +1524,17 @@ def find_article_container(page_tree):
     返回: (main_content, cleaned_body) - 主内容容器和清理后的body
     """
     cleaned_body = preprocess_html_remove_interference(page_tree)
-    
+
     if cleaned_body is None:
         logger.error("清理后的body为None")
         return None, None
-    
-    main_content = find_main_content_in_cleaned_html(cleaned_body)
+
+    # 获取原始的body用于检查
+    original_body = page_tree.xpath("//body")
+    print(f"original_body is {original_body}")
+    original_body = original_body[0] if original_body else None
+
+    main_content = find_main_content_in_cleaned_html(cleaned_body, original_body)
     
     # 返回主内容容器和清理后的body（确保使用清理后的tree）
     return main_content, cleaned_body
@@ -1670,6 +1691,15 @@ def clean_container_html(container_html: str) -> str:
             if style:  # 确保不是None
                 style.decompose()
 
+        # 删除包含base64的img标签
+        for img in soup.find_all('img'):
+            if img:
+                # 检查src属性是否包含base64
+                src = img.get('src', '')
+                if 'base64' in src.lower():
+                    img.decompose()
+                    logger.info(f"删除包含base64的img标签")
+
         # 1. 查找所有有style属性的元素
         styled_elements = soup.find_all(attrs={"style": True})
         
@@ -1761,7 +1791,7 @@ def clean_markdown_content(markdown_content: str) -> str:
     
     return '\n'.join(cleaned_lines)
 
-def find_main_content_in_cleaned_html(cleaned_body):
+def find_main_content_in_cleaned_html(cleaned_body, original_body=None):
     """在清理后的HTML中查找主内容区域"""
     
     if cleaned_body is None:
@@ -1957,25 +1987,30 @@ def find_main_content_in_cleaned_html(cleaned_body):
                     parent_id = parent_container.get('id', '')
                     parent_text_length = len(parent_container.text_content().strip())
                     parent_child_count = len(parent_container.xpath(".//*"))
-                    
+
                     logger.info(f"   📦 找到的父容器（向上{parent_depth}层）:")
                     logger.info(f"      标签={parent_container.tag}, class='{parent_classes}', id='{parent_id}'")
                     logger.info(f"      文本长度={parent_text_length}, 子元素={parent_child_count}")
-                    
-                    # 检查父容器是否包含干扰特征
-                    parent_combined = f"{parent_classes} {parent_id}".lower()
-                    has_interference = any(keyword in parent_combined for keyword in 
-                                         ['header', 'footer', 'nav', 'menu', 'sidebar'])
-                    
-                    if not has_interference and parent_text_length > selected_text_length * 0.8:
-                        best_container = parent_container
-                        logger.info(f"   ✅ 选择父容器 (避免过度精确)")
-                    else:
+
+                    # 额外检查：如果父容器是body标签，回退到精确容器
+                    if parent_container.tag.lower() == 'body':
                         best_container = selected_precise_container
-                        if has_interference:
-                            logger.info(f"   ⚠ 父容器包含干扰特征，保持精确容器")
+                        logger.info(f"   ⚠ 父容器是body标签，回退到精确容器")
+                    else:
+                        # 检查父容器是否包含干扰特征
+                        parent_combined = f"{parent_classes} {parent_id}".lower()
+                        has_interference = any(keyword in parent_combined for keyword in
+                                             ['header', 'footer', 'nav', 'menu', 'sidebar'])
+
+                        if not has_interference and parent_text_length > selected_text_length * 0.8:
+                            best_container = parent_container
+                            logger.info(f"   ✅ 选择父容器 (避免过度精确)")
                         else:
-                            logger.info(f"   ⚠ 父容器内容差异过大，保持精确容器")
+                            best_container = selected_precise_container
+                            if has_interference:
+                                logger.info(f"   ⚠ 父容器包含干扰特征，保持精确容器")
+                            else:
+                                logger.info(f"   ⚠ 父容器内容差异过大，保持精确容器")
                 else:
                     best_container = selected_precise_container
                     logger.info(f"   ⚠ 无有效父容器，保持精确容器")
@@ -2040,11 +2075,34 @@ def find_main_content_in_cleaned_html(cleaned_body):
     # 获取最终选择的容器分数（如果是父容器，可能不在原始列表中）
     try:
         final_score = next(score for container, score in scored_containers if container == best_container)
+        recalculated = False
     except StopIteration:
         # 如果best_container不在scored_containers中（比如选择了父容器），重新计算分数
         logger.info("   ℹ 最终容器不在原始评分列表中，重新计算分数...")
         final_score = calculate_content_container_score(best_container)
         logger.info(f"   重新计算的得分: {final_score}")
+        recalculated = True
+
+        # 如果重新计算的分数与最高分相同，检查是否有极高链接密度
+        if scored_containers and final_score == scored_containers[0][1]:
+            # 计算链接密度（使用与评分函数相同的逻辑）
+            text_content = best_container.text_content().strip()
+            text_length = len(text_content)
+            have_muchLinks = False
+
+            if text_length > 0:
+                links = best_container.xpath(".//a")
+                link_count = len(links)
+                # 判断是否有大量链接（与评分函数第2445-2446行逻辑一致）
+                if link_count > 7:
+                    have_muchLinks = True
+
+            if have_muchLinks:
+                logger.warning(f"   ⚠ 重新计算的容器有极高链接密度，且分数与最高分相同")
+                logger.info(f"   🔄 回退到原始最高分容器")
+                best_container = scored_containers[0][0]
+                final_score = scored_containers[0][1]
+                recalculated = False
     
     final_text_length = len(best_container.text_content().strip())
     final_child_count = len(best_container.xpath(".//*"))
@@ -2058,7 +2116,32 @@ def find_main_content_in_cleaned_html(cleaned_body):
     logger.info(f"   文本长度: {final_text_length} 字符")
     logger.info(f"   子元素数: {final_child_count}")
     logger.info("="*80 + "\n")
-    
+
+    # 这里对于最后选择的class进行判断，如果选到了body就回退到得分最高的容器，防止父子容器选择机制去找父容器的时候，找到了body
+    # 不过 TODO: 这里还是有一个问题，如果得分最高的容器名称就是和body的class一样呢，或者........
+    # 检查最终选择的容器是否是body标签（通过class名称判断）
+    # final_class = best_container.get('class', '')
+    # if final_class and original_body is not None:
+    #     # 检查原始body标签是否使用了相同的class
+    #     body_class = original_body.get('class', '')
+    #     print(body_class)
+    #     if body_class == final_class:
+    #         logger.info(f"   ⚠ 检测到选择的容器class与body标签相同，回退到分数最高的容器")
+    #         # 回退到分数最高的容器
+    #         if scored_containers:
+    #             best_container = scored_containers[0][0]
+    #             final_score = scored_containers[0][1]
+    #             final_text_length = len(best_container.text_content().strip())
+    #             final_child_count = len(best_container.xpath(".//*"))
+
+    #             logger.info("🔄 回退后的选择结果:")
+    #             logger.info(f"   得分: {final_score}")
+    #             logger.info(f"   标签: {best_container.tag}")
+    #             logger.info(f"   类名: {best_container.get('class', '')[:80]}")
+    #             logger.info(f"   ID: {best_container.get('id', '')[:50]}")
+    #             logger.info(f"   文本长度: {final_text_length} 字符")
+    #             logger.info(f"   子元素数: {final_child_count}")
+
     return best_container
 def is_child_of(child_element, parent_element):
     """检查child_element是否是parent_element的子节点"""
@@ -2381,7 +2464,8 @@ def calculate_content_container_score(container):
     
     header_content_count = len(found_header_keywords)
     footer_content_count = len(found_footer_keywords)
-    
+    # 如果链接密度过高，下面的长文本加分就另外处理
+    have_muchLinks = False
     # 3. 简化的链接密度检查（辅助判断）
     links = container.xpath(".//a[@href]")
     
@@ -2393,8 +2477,8 @@ def calculate_content_container_score(container):
         links_per_100_chars = (link_count / text_length) * 10000
         link_text_ratio = link_text_total / text_length
         
-        logger.info(f"🔗 链接分析: {link_count}个链接, 密度={links_per_100_chars:.2f}个/5000字符, 占比={link_text_ratio:.1%}")
-        
+        logger.info(f"🔗 链接分析: {link_count}个链接, 密度={links_per_100_chars:.2f}个/5000字符, 占比={link_text_ratio:.1%}")        
+
         # 简单判断：链接密度过高就减分
         if link_count > 5 :
             if links_per_100_chars > 5:
@@ -2403,7 +2487,10 @@ def calculate_content_container_score(container):
             elif links_per_100_chars > 3:
                 score -= 50
                 debug_info.append(f"⚠ 高链接密度: -50")
-    
+         
+        if link_count > 7:
+            have_muchLinks = True
+
     logger.info(f"📝 内容特征分析:")
     logger.info(f"   首部关键词({header_content_count}个): {found_header_keywords}")
     logger.info(f"   尾部关键词({footer_content_count}个): {found_footer_keywords}")
@@ -2474,9 +2561,10 @@ def calculate_content_container_score(container):
     elif score < -200 and is_long_content:
         logger.info(f"⚠ 当前得分较低({score})，但文本较长({text_length}字符)，继续计算")
     
-    # 5. 基础内容长度评分
+    # 5. 基础内容长度评分 2025.12.9新增，对于大量的链接存在的长文本，不加分
     logger.info(f"📏 内容长度评分: {text_length}字符")
-    if text_length > 5000:
+    # 如果文本长，并且还不是大量的链接的情况下
+    if text_length > 5000 and not have_muchLinks:
         score+=200
         debug_info.append("✓ 超长内容: +200")
         logger.info(f"✓ 超长内容加分: +200")
