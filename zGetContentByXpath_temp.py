@@ -284,7 +284,7 @@ def clean_html_content_advanced(html_content: str) -> str:
         tags_to_delete = [
             "已阅","字号", "打印", "关闭", "收藏","分享到微信","分享","字体",
             "扫一扫在手机打开当前页", "扫一扫在手机上查看当前页面","用微信“扫一扫”","分享给您的微信好友",
-            "相关链接"
+            "相关链接",'下载文字版','下载图片版'
         ]
 
         for tag_text in tags_to_delete:
