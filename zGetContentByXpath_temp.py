@@ -144,7 +144,7 @@ def delete_short_tags(soup: BeautifulSoup, tag_text: str) -> None:
             if tag_text in parent_text:
                 # 进一步检查，确保不是正文中的内容
                 # 如果父标签是span、div等容器标签，且文本很短，很可能是导航或功能按钮
-                if parent.name in ['span', 'div', 'a', 'button', 'p'] and not any(
+                if parent.name in ['span', 'div', 'a', 'button', 'p','dt','li'] and not any(
                     keyword in parent_text.lower()
                     for keyword in ['文章', '内容', '正文', '详情', '更多信息']
                 ):
@@ -282,9 +282,9 @@ def clean_html_content_advanced(html_content: str) -> str:
 
         # 删除短标签（功能按钮等）
         tags_to_delete = [
-            "已阅","字号", "打印", "关闭", "收藏","分享到微信","分享","字体",
+            "已阅","字号", "打印", "关闭", "收藏","分享到微信","分享","字体","小","中","大","s92及gd格式的文件请用SEP阅读工具",
             "扫一扫在手机打开当前页", "扫一扫在手机上查看当前页面","用微信“扫一扫”","分享给您的微信好友",
-            "相关链接",'下载文字版','下载图片版'
+            "相关链接",'下载文字版','下载图片版','扫一扫在手机打开当前页面'
         ]
 
         for tag_text in tags_to_delete:
@@ -541,26 +541,13 @@ def split_header_and_content_v2(html_content: str) -> tuple[str, str]:
     """
     if not html_content:
         return '', ''
-    print(f"DEBUG: HTML内容长度: {len(html_content)}")
     try:
         soup = BeautifulSoup(html_content, 'html.parser')
-        print("DEBUG: BeautifulSoup对象创建成功")
-        logger.debug("BeautifulSoup对象创建成功")
     except Exception as e:
-        print(f"DEBUG: BeautifulSoup创建失败: {str(e)}")
         logger.error(f"BeautifulSoup创建失败: {str(e)}")
         return '', html_content
 
-    # 不要打印整个HTML内容，只打印长度和前100个字符
-    print(f"DEBUG: BeautifulSoup解析完成，内容长度: {len(str(soup))}")
-    logger.debug(f"BeautifulSoup解析完成，内容长度: {len(str(soup))}")
-    print(f"DEBUG: HTML内容预览: {str(soup)[:100]}...")
-    logger.debug(f"HTML内容预览: {str(soup)[:100]}...")
-
-    print("DEBUG: 开始移除不可见标签...")
-    logger.debug("开始移除不可见标签...")
     remove_invisible_tags(soup)
-    print("DEBUG: 移除不可见标签完成")
     logger.debug("移除不可见标签完成")
 
     # 1. 找到表格元素
@@ -571,13 +558,18 @@ def split_header_and_content_v2(html_content: str) -> tuple[str, str]:
         # 确保是元数据表格
         if get_element_score(table) == 2:
             table_element = table
-            print(f"DEBUG: 找到元数据表格: {clean_text(table.get_text())[:50]}")
-
             # 处理重复的元数据元素（删除重复的div表格）
-            print("DEBUG: 开始处理重复的元数据元素...")
             soup, metadata_removed_count = remove_duplicate_metadata_elements(soup, table_element)
             print(f"DEBUG: 重复元数据元素处理完成，删除了 {metadata_removed_count} 个div表格")
             break
+    # 2025.12.9不想干了！
+    # 针对于表格的html为div格式的勾八前端代码！
+    divs = soup.find_all('div')
+    for div in divs:
+        if get_element_score(div) == 2:
+            print("找到div格式的表格！")
+            table_element = div
+
 
     if not table_element:
         # 如果没有表格，尝试找面包屑
@@ -729,7 +721,7 @@ def split_header_and_content_v2(html_content: str) -> tuple[str, str]:
     # 如果分界点是表格，需要提取：
     # 1. 表格本身
     # 2. 表格上方的所有面包屑
-    if cutoff_element.name == 'table' or get_element_score(cutoff_element) == 2:
+    if cutoff_element.name == 'table' or cutoff_element.name == 'div' or get_element_score(cutoff_element) == 2:
         elements_to_extract.append(cutoff_element)
         print("DEBUG: 分界点是表格，提取表格及上方面包屑")
 
@@ -1635,6 +1627,26 @@ def extract_content_to_markdown(html_content: str):
 
         # 返回已初始化的失败结果，确保所有字段都有值
         return result
+def remove_pua_chars(text:str)->str:
+    """
+    移除 Unicode 私人使用区 (PUA) 字符：
+    - U+E000–U+F8FF (BMP)
+    - U+F0000–U+FFFFD (Plane 15)
+    - U+100000–U+10FFFD (Plane 16)
+    """
+    if not text:
+        return text
+
+    # 使用逐字符判断，兼容性好且准确
+    def is_pua(char):
+        code = ord(char)
+        return (
+            0xE000 <= code <= 0xF8FF or
+            0xF0000 <= code <= 0xFFFFD or
+            0x100000 <= code <= 0x10FFFD
+        )
+
+    return ''.join(c for c in text if not is_pua(c))
 
 def clean_container_html(container_html: str) -> str:
     """
@@ -1704,9 +1716,10 @@ def clean_container_html(container_html: str) -> str:
                 except (AttributeError, KeyError):
                     logger.warning("clean_container_html安全删除失败了")
                     pass  # 属性可能已被删除
-        
+        cleaned_html = str(soup)
+        cleaned_html = remove_pua_chars(cleaned_html)
         # 返回清理后的HTML
-        return str(soup)
+        return cleaned_html
         
     except Exception as e:
         # 如果发生错误，返回原始内容或空字符串
@@ -2385,8 +2398,8 @@ def calculate_content_container_score(container):
         # 简单判断：链接密度过高就减分
         if link_count > 5 :
             if links_per_100_chars > 5:
-                score -= 100
-                debug_info.append(f"❌ 极高链接密度: -100")
+                score -= 120
+                debug_info.append(f"❌ 极高链接密度: -120")
             elif links_per_100_chars > 3:
                 score -= 50
                 debug_info.append(f"⚠ 高链接密度: -50")
@@ -3436,7 +3449,7 @@ def progressResult(json_str: dict) -> dict:
         # 判断是否有有效内容（正文长度大于50个字符）
         extract_success = bool(
             cl_content_md.strip() and
-            len(cl_content_md) > 50
+            len(cl_content_md) > 150
         )
 
         # 更新结果，现在包含header_content_html
