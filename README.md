@@ -112,6 +112,7 @@ server {
     }
 }
 ```
+然后执行`/usr/local/nginx/sbin/nginx -t`,看是否输出successful，表明nginx.conf是没有问题的
 
 > ✅ **新增服务时**：只需在 `upstream` 块中追加一行 `server 127.0.0.1:<新端口>;` 即可。
 
