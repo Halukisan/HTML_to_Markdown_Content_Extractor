@@ -13,51 +13,53 @@ import logging
 import os
 from logging.handlers import RotatingFileHandler
 import datetime
-# 用于测试
-def setup_logging():
-    """设置日志配置 - 输出到带时间戳的日志文件 + 控制台"""
-    # 生成时间戳文件名
-    log_dir = "logs"
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_file = os.path.join(log_dir, f"xpath_processing_{timestamp}.log")
-    
-    # 创建日志目录
-    os.makedirs(log_dir, exist_ok=True)
-    
-    # Handler: 文件（可选轮转）+ 控制台
-    file_handler = logging.FileHandler(log_file, encoding='utf-8')
-    console_handler = logging.StreamHandler()
-    
-    # 日志格式
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    file_handler.setFormatter(formatter)
-    console_handler.setFormatter(formatter)
-    
-    # 配置 logger
-    logging.basicConfig(
-        level=logging.DEBUG,
-        handlers=[file_handler, console_handler]
-    )
-    
-    return logging.getLogger(__name__)
-# 用于部署
-# 配置日志 - 高并发优化版本
+# 用于测试--------------------------------------------------------------------------
 # def setup_logging():
-#     """设置日志配置 - 减少IO开销"""
-#     # 生产环境只记录WARNING及以上级别
-#     log_level = logging.WARNING  # 从INFO改为WARNING
+#     """设置日志配置 - 输出到带时间戳的日志文件 + 控制台"""
+#     # 生成时间戳文件名
+#     log_dir = "logs"
+#     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+#     log_file = os.path.join(log_dir, f"xpath_processing_{timestamp}.log")
     
-#     # 配置日志格式（简化格式）
+#     # 创建日志目录
+#     os.makedirs(log_dir, exist_ok=True)
+    
+#     # Handler: 文件（可选轮转）+ 控制台
+#     file_handler = logging.FileHandler(log_file, encoding='utf-8')
+#     console_handler = logging.StreamHandler()
+    
+#     # 日志格式
+#     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+#     file_handler.setFormatter(formatter)
+#     console_handler.setFormatter(formatter)
+    
+#     # 配置 logger
 #     logging.basicConfig(
-#         level=log_level,
-#         format='%(levelname)s - %(message)s',  # 简化格式
-#         handlers=[
-#             logging.StreamHandler()  # 只输出到控制台，减少文件IO
-#         ]
+#         level=logging.DEBUG,
+#         handlers=[file_handler, console_handler]
 #     )
     
 #     return logging.getLogger(__name__)
-# # 初始化日志
+# 用于部署---------------------------------------------------------------------------
+# 配置日志 - 高并发优化版本
+def setup_logging():
+    """设置日志配置 - 减少IO开销"""
+    # 生产环境只记录WARNING及以上级别
+    log_level = logging.WARNING  # 从INFO改为WARNING
+    
+    # 配置日志格式（简化格式）
+    logging.basicConfig(
+        level=log_level,
+        format='%(levelname)s - %(message)s',  # 简化格式
+        handlers=[
+            logging.StreamHandler()  # 只输出到控制台，减少文件IO
+        ]
+    )
+    
+    return logging.getLogger(__name__)
+
+
+# 初始化日志
 logger = setup_logging()
 
 # FastAPI应用
@@ -300,7 +302,7 @@ def clean_html_content_advanced(html_content: str) -> str:
         tags_to_delete = [
             "已阅","字号", "打印", "关闭", "收藏","分享到微信","分享","字体","小","中","大","s92及gd格式的文件请用SEP阅读工具",
             "扫一扫在手机打开当前页", "扫一扫在手机上查看当前页面","用微信“扫一扫”","分享给您的微信好友",
-            "相关链接",'下载文字版','下载图片版','扫一扫在手机打开当前页面',"微信扫一扫：分享","上一篇","下一篇"
+            "相关链接",'下载文字版','下载图片版','扫一扫在手机打开当前页面',"微信扫一扫：分享","上一篇","下一篇","【打印文章】","返回顶部"
         ]
 
         for tag_text in tags_to_delete:
@@ -521,7 +523,7 @@ def get_element_score(element) -> int:
     # 2. 弱特征：UI / 导航 / 面包屑
     # 必须比较短，否则可能是正文里的词
     if len(text) < 200:
-        ui_keywords = ['首页', '主页', '打印', '关闭', '收藏', '字号', '扫一扫', '分享', '当前位置', '位置：', '位置:']
+        ui_keywords = ['首页', '主页', '打印', '关闭', '收藏', '字号', '扫一扫', '分享', '当前位置','当前位置：', '位置：', '位置:']
         if any(kw in text for kw in ui_keywords):
             return 1
         # 面包屑特征 ">"
@@ -2100,7 +2102,7 @@ def find_main_content_in_cleaned_html(cleaned_body, original_body=None):
                 link_count = len(links)
                 logger.info(f"是否包含大量链接，链接数量为：{link_count}")
                 # 判断是否有大量链接（与评分函数第2445-2446行逻辑一致）
-                if link_count > 7:
+                if link_count >= 5:
                     have_muchLinks = True
 
             if have_muchLinks:
@@ -2460,7 +2462,7 @@ def calculate_content_container_score(container):
     footer_content_keywords = [
         '网站说明', '网站标识码', '版权所有', '主办单位', '承办单位', 
         '技术支持', '联系我们', '网站地图', '隐私政策', '免责声明',
-        '备案号', 'icp', '公安备案', '政府网站', '网站管理',
+        '备案号', 'icp', '公安备案', '政府网站', '网站管理','关闭窗口','打印文章','返回顶部',
         'copyright', 'all rights reserved', 'powered by', 'designed by','十字线','鼠标样式','读屏专用','ALT+Shift'
     ]
     
@@ -2486,7 +2488,10 @@ def calculate_content_container_score(container):
         logger.info(f"🔗 链接分析: {link_count}个链接, 密度={links_per_100_chars:.2f}个/5000字符, 占比={link_text_ratio:.1%}")        
 
         # 简单判断：链接密度过高就减分
-        if link_count > 5 :
+        if link_count > 15:
+            score -= 200
+            debug_info.append(f"❌ 超高链接密度--大于15个:-200")
+        elif link_count > 5 :
             if links_per_100_chars > 5:
                 score -= 120
                 debug_info.append(f"❌ 极高链接密度: -120")
@@ -2494,7 +2499,7 @@ def calculate_content_container_score(container):
                 score -= 50
                 debug_info.append(f"⚠ 高链接密度: -50")
          
-        if link_count > 7:
+        if link_count >= 5:
             have_muchLinks = True
 
     logger.info(f"📝 内容特征分析:")
