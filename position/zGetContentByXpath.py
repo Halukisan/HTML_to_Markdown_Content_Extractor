@@ -12,7 +12,6 @@ from bs4 import BeautifulSoup, Comment,Tag
 import logging
 import os
 from logging.handlers import RotatingFileHandler
-import datetime
 # 用于测试--------------------------------------------------------------------------
 def setup_logging():
     """设置日志配置 - 输出到带时间戳的日志文件 + 控制台"""
