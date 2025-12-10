@@ -12,6 +12,7 @@ from bs4 import BeautifulSoup, Comment,Tag
 import logging
 import os
 from logging.handlers import RotatingFileHandler
+import datetime
 # 用于测试--------------------------------------------------------------------------
 def setup_logging():
     """设置日志配置 - 输出到带时间戳的日志文件 + 控制台"""
@@ -301,7 +302,8 @@ def clean_html_content_advanced(html_content: str) -> str:
         tags_to_delete = [
             "已阅","字号", "打印", "关闭", "收藏","分享到微信","分享","字体","小","中","大","s92及gd格式的文件请用SEP阅读工具",
             "扫一扫在手机打开当前页", "扫一扫在手机上查看当前页面","用微信“扫一扫”","分享给您的微信好友",
-            "相关链接",'下载文字版','下载图片版','扫一扫在手机打开当前页面',"微信扫一扫：分享","上一篇","下一篇","【打印文章】","返回顶部","你的浏览器不支持video"
+            "相关链接",'下载文字版','下载图片版','扫一扫在手机打开当前页面',"微信扫一扫：分享","上一篇","下一篇","【打印文章】","返回顶部",
+            "你的浏览器不支持video"
         ]
 
         for tag_text in tags_to_delete:
