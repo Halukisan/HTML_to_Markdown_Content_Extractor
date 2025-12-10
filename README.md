@@ -1,45 +1,91 @@
 > 算法已经非常稳健，切勿修改任何一个数字和字符，每一个分值的计算和确定都是大量的测试数据得到的经验。
 
-## API 端点
-**192.169.182.41:8000/extract** 
-### 1. 健康检查
+# HTML to Markdown Content Extractor API 文档
 
-**GET** `/health`
 
-检查API服务状态。
+## 接口列表
 
-**响应示例:**
+### 获取API信息
+
+**接口地址**: `GET /`
+
+**接口描述**: 获取API基本信息和可用端点列表
+
+**请求参数**: 无
+
+**响应示例**:
+```json
+{
+  "message": "HTML to Markdown Content Extractor API",
+  "version": "2.0.0",
+  "endpoints": {
+    "/extract": "POST - 提取正文",
+    "/health": "GET - 健康检查"
+  }
+}
+```
+
+### 健康检查
+
+**接口地址**: `GET /health`
+
+**接口描述**: 检查服务运行状态
+
+**请求参数**: 无
+
+**响应示例**:
 ```json
 {
   "status": "healthy",
-  "timestamp": "2024-01-15T10:30:00"
+  "timestamp": "2025-12-10T10:30:00.000000"
 }
 ```
 
-### 2. 提取内容
+### 提取HTML内容
 
-**POST** `/extract`
+**接口地址**: `POST /extract`
 
-从HTML内容中提取正文并转换为Markdown。
 
-**请求体:**
-```json
-{
-  "html_content": "<html>...</html>",
-  "url":"网页的url(可选，用于之后的OCR)"
-}
-```
+### HTMLInput
 
-**响应体:**
-```json
-{
-  "markdown_content": "# 标题\n\n这是正文内容...",
-  "html_content":"定位并清洗得到的html内容",
-  "xpath": "//div[@class='content']",
-  "status": "success",
-  "process_time":(float，单位秒) 0.1682
-}
-```
+
+| 字段名 | 类型 | 必填 | 描述 | 示例值 |
+|--------|------|------|------|--------|
+| html_content | string | 是 | 待处理的HTML内容 | `"<html>...</html>"` |
+| url | string | 否 | 源页面URL（当前版本未使用） | `"https://example.com"` |
+
+### MarkdownOutput
+
+
+| 字段名 | 类型 | 描述 | 示例值 |
+|--------|------|------|--------|
+| markdown_content | string | 提取的Markdown格式正文内容 | `"# 标题\n\n正文内容..."` |
+| html_content | string | 提取的HTML格式正文内容（已清理） | `"<div><p>正文内容</p></div>"` |
+| xpath | string | 定位到内容容器的XPath表达式 | `"//div[@id='content']"` |
+| status | string | 处理状态用于记录程序内部错误：`success` 或 `failed` | `"success"` |
+| process_time | float | 接口处理时间（秒） | `0.235` |
+| header_content_text | string | 正文之上的内容（标题、面包屑等） | `"首页 > 新闻 > 正文"` |
+| cl_content_html | string | 清理过后的正文HTML（去除标题和正文间的无关内容） | `"<div><p>清理后的正文</p></div>"` |
+| cl_content_md | string | 清理过后的正文Markdown | `"清理后的正文"` |
+| cl_content_text | string | 清理过后的正文纯文本 | `"清理后的正文"` |
+| extract_success | boolean | 正文提取是否成功 | `True` |
+
+> 需要关注、使用的字段为：header_content_text、cl_content_html、cl_content_md、cl_content_text、extract_success，这些字段可能会出现以下两种情况：
+1. 当`extract_success`为 `True` 时,表示正文提取成功
+    * 但此时`header_content_text`可能是空的，此字段为空时标志着文章header提取失败
+2. 当`extract_success`为 `False` 时,表示正文提取失败
+    * 此时`cl_content_html`、`cl_content_md`、`cl_content_text`三个值可能依然存在内容，但请忽略，使用原始输入的html作为正文即可
+    * `header_content_text`此时该字段可能不为空，依然存在内容，这种情况一定概率是程序将正文内容识别为了header而放到了header里面，导致正文字段无内容，请自行处理。
+
+
+## 错误码说明
+
+| HTTP状态码 | 错误类型 | 说明 | 示例响应 |
+|------------|----------|------|----------|
+| 400 | Bad Request | 请求参数错误，如HTML内容为空 | `{"detail": "HTML内容不能为空"}` |
+| 422 | Unprocessable Entity | 无法从HTML中提取有效内容 | `{"detail": "无法从HTML中提取有效内容"}` |
+| 500 | Internal Server Error | 服务器内部错误 | `{"detail": "服务器内部错误: 具体错误信息"}` |
+
 
 ### 代码示例
 
