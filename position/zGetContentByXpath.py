@@ -158,6 +158,7 @@ def delete_short_tags(soup: BeautifulSoup, tag_text: str) -> None:
         # 检查前后是否是长文字
         # 如果整个父标签文本很短（小于50个字符），认为可以删除
         if len(parent_text) < 50:
+            print(f"---------------parent_text::{parent_text}")
             # 检查是否匹配确切的目标文本
             if tag_text in parent_text:
                 # 进一步检查，确保不是正文中的内容
@@ -166,6 +167,7 @@ def delete_short_tags(soup: BeautifulSoup, tag_text: str) -> None:
                     keyword in parent_text.lower()
                     for keyword in ['文章', '内容', '正文', '详情', '更多信息']
                 ):
+                    print("-----------------")
                     elements_to_delete.append(parent)
 
     # 安全删除：在收集完成后统一删除
@@ -295,7 +297,7 @@ def clean_html_content_advanced(html_content: str) -> str:
         soup = BeautifulSoup(html_content, 'html.parser')
 
         # 移除不需要的标签
-        for tag in soup.find_all(['script', 'style', 'meta', 'link', 'noscript']):
+        for tag in soup.find_all(['script', 'style', 'meta', 'link', 'noscript','el-button']):
             tag.decompose()
 
         # 删除短标签（功能按钮等）
@@ -303,9 +305,9 @@ def clean_html_content_advanced(html_content: str) -> str:
             "已阅","字号", "打印", "关闭", "收藏","分享到微信","分享","字体","小","中","大","s92及gd格式的文件请用SEP阅读工具",
             "扫一扫在手机打开当前页", "扫一扫在手机上查看当前页面","用微信“扫一扫”","分享给您的微信好友",
             "相关链接",'下载文字版','下载图片版','扫一扫在手机打开当前页面',"微信扫一扫：分享","上一篇","下一篇","【打印文章】","返回顶部",
-            "你的浏览器不支持video"
+            "你的浏览器不支持video","当前位置：","微信里点“发现”，扫一下","浏览次数：","您当前的位置：",'返回上一页'
         ]
-
+        
         for tag_text in tags_to_delete:
             delete_short_tags(soup, tag_text)
 
@@ -339,7 +341,6 @@ def clean_html_content_advanced(html_content: str) -> str:
             except Exception:
                 logger.warning("clean_html_content_advanced安全删除失败了")
                 pass
-
         # 保留属性列表
         essential_attributes = {
             'div': [], 'p': [], 'span': [],
@@ -424,7 +425,8 @@ def remove_duplicate_metadata_elements(soup, table_element):
     # 定义需要匹配的元数据关键词
     metadata_keywords = [
         '发文机关', '发文字号', '发文日期', '成文日期', '发布日期', '主题分类',
-        '公文种类', '来源', '索引号', '标题', '文号', '签发人','发布机构','体裁分类','组配分类'
+        '公文种类', '来源', '索引号', '标题', '文号', '签发人','发布机构','体裁分类','组配分类',
+        '发布单位'
     ]
 
     # 从表格文本中提取包含关键词的完整短语
@@ -524,7 +526,7 @@ def get_element_score(element) -> int:
     # 2. 弱特征：UI / 导航 / 面包屑
     # 必须比较短，否则可能是正文里的词
     if len(text) < 200:
-        ui_keywords = ['首页', '主页', '打印', '关闭', '收藏', '字号', '扫一扫', '分享', '当前位置','当前位置：', '位置：', '位置:']
+        ui_keywords = ['首页', '主页', '打印',"保存", '关闭', '收藏', '字号', '扫一扫', '分享','来源：', '当前位置','当前位置：', '位置：', '位置:',"发布时间"]
         if any(kw in text for kw in ui_keywords):
             return 1
         # 面包屑特征 ">"
@@ -548,15 +550,434 @@ def is_content_start(element) -> bool:
         
     return False
 
+def has_heading_tags(element: Tag, max_depth: int = 3) -> bool:
+    """
+    检查元素及其子元素中是否包含标题标签（h1-h6）
+
+    Args:
+        element: 要检查的HTML元素
+        max_depth: 最大搜索深度
+
+    Returns:
+        bool: 是否找到标题标签
+    """
+    # 直接检查当前元素是否是标题
+    if element.name and element.name.lower() in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
+        return True
+
+    # 递归检查子元素
+    if max_depth > 0:
+        for child in element.find_all(recursive=False):
+            if has_heading_tags(child, max_depth - 1):
+                return True
+
+    return False
+
+
+def has_content_indicators(element: Tag) -> bool:
+    """
+    检查元素是否包含正文的指示性特征
+
+    Args:
+        element: 要检查的HTML元素
+
+    Returns:
+        bool: 是否包含正文特征
+    """
+    # 检查是否有大量文本内容（超过200字符）
+    text_content = element.get_text(strip=True)
+    if len(text_content) > 200:
+        # 进一步检查是否包含段落结构
+        if element.find('p') or element.find_all(text=lambda text: len(text.strip()) > 50):
+            return True
+
+    # 检查是否包含常见的正文容器标签
+    content_tags = ['article', 'main', 'section', 'div.content', 'div.main-content']
+    element_classes = element.get('class', [])
+
+    for tag in content_tags:
+        if tag in element_classes:
+            return True
+
+    return False
+
+
+def analyze_content_structure(element: Tag) -> dict:
+    """
+    分析HTML元素的结构特征，返回评分字典
+
+    Args:
+        element: 要分析的HTML元素
+
+    Returns:
+        dict: 包含各种评分的字典
+    """
+    scores = {
+        'heading_score': 0,      # 标题特征评分
+        'content_score': 0,      # 内容特征评分
+        'structure_score': 0,    # 结构特征评分
+        'total_score': 0         # 综合评分
+    }
+
+    if not element:
+        return scores
+
+    # 1. 标题特征评分
+    # 检查标签名
+    heading_tags = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'title', 'header']
+    if element.name in heading_tags:
+        scores['heading_score'] += 1
+
+    # 检查class/id中的关键词
+    element_classes = element.get('class', [])
+    element_id = element.get('id', '')
+    text_lower = clean_text(element.get_text()).lower()
+
+    # heading_keywords = [
+    #     'title', 'heading', 'headline', 'subject', 'topic',
+    #     '标题', '题目', '主题', '章', '节', '篇'
+    # ]
+
+    # for keyword in heading_keywords:
+    #     if keyword in ' '.join(element_classes):
+    #         scores['heading_score'] += 2
+    #     if keyword in element_id:
+    #         scores['heading_score'] += 2
+    #     if keyword in text_lower:
+    #         scores['heading_score'] += 1
+
+    # 检查文本特征（通常标题较短且重要）
+    text = clean_text(element.get_text())
+    if 5 <= len(text) <= 100:  # 标题通常不太长也不太短
+        scores['heading_score'] += 1
+
+    # 2. 内容特征评分
+    # 文本长度评分
+    if len(text) > 50:
+        scores['content_score'] += min(len(text) // 100, 5)  # 每100字符加1分，最多5分
+
+    # 段落数量评分
+    paragraphs = element.find_all('p')
+    scores['content_score'] += min(len(paragraphs), 3)  # 最多3分
+
+    # 包含链接的数量
+    links = element.find_all('a')
+    scores['content_score'] += min(len(links), 2)  # 最多2分
+
+    # 3. 结构特征评分
+    # 容器标签检查
+    content_containers = ['article', 'main', 'section', 'content', 'body']
+    if element.name in content_containers:
+        scores['structure_score'] += 3
+
+    # class检查
+    content_classes = [
+        'content', 'article', 'post', 'entry', 'main', 'body',
+        'text', 'paragraph', 'description'
+    ]
+    for cls in content_classes:
+        if cls in element_classes:
+            scores['structure_score'] += 2
+            break
+
+    # 嵌套深度检查（正文通常嵌套较深）
+    depth = len(list(element.parents))
+    if depth > 3:  # 嵌套超过3层
+        scores['structure_score'] += 1
+
+    # 计算综合评分
+    scores['total_score'] = (
+        scores['heading_score'] * 2 +  # 标题特征权重更高
+        scores['content_score'] +
+        scores['structure_score']
+    )
+
+    return scores
+
+
+def check_by_punctuation(soup: BeautifulSoup, cutoff_element: Tag, html_content: str) -> bool:
+    """
+    基于标点符号的快速检测：正文通常有标点，header通常没有
+
+    Args:
+        soup: BeautifulSoup对象
+        cutoff_element: 分界点元素
+        html_content: 原始HTML内容
+
+    Returns:
+        bool: True表示有正文内容，应该放弃header提取
+    """
+    
+    try:
+        cutoff_str = str(cutoff_element)
+        cutoff_pos = html_content.find(cutoff_str)
+
+        if cutoff_pos == -1:
+            # 如果找不到，尝试简化元素字符串（去除多余属性）
+            import re
+            # 移除可能的样式和class属性
+            simplified_cutoff_str = re.sub(r'\s+style="[^"]*"', '', cutoff_str)
+            simplified_cutoff_str = re.sub(r'\s+class="[^"]*"', '', simplified_cutoff_str)
+            simplified_cutoff_str = re.sub(r'\s+id="[^"]*"', '', simplified_cutoff_str)
+            # 移除多余空白
+            simplified_cutoff_str = re.sub(r'\s+', ' ', simplified_cutoff_str)
+            cutoff_pos = html_content.find(simplified_cutoff_str)
+
+            if cutoff_pos == -1:
+                logger.warning(f"WARNING: 无法在原始HTML中找到分界点，分界点类型: {cutoff_element.name}")
+                logger.debug(f"DEBUG: 分界点内容预览: {cutoff_str[:200]}...")
+                logger.debug(f"DEBUG: 原始HTML长度: {len(html_content)}")
+                # 尝试只使用元素的文本内容进行匹配
+                text_content = clean_text(cutoff_element.get_text())
+                print(text_content)
+                print(len(text_content))
+                if text_content and len(text_content) > 5:  # 如果有意义的文本
+                    prefix = text_content[:15]
+                    prefix = prefix.rstrip()
+                    print(prefix)
+                    if prefix:
+                        text_pos = html_content.find(prefix)
+                        if text_pos != -1:
+                            logger.debug(f"DEBUG: 在原始HTML中找到了分界点的文本内容，{text_pos}")
+                            cutoff_pos = text_pos
+                        else:
+                            logger.debug(f"DEBUG: 即使文本内容也无法找到: {prefix}")
+                            return False
+                else:
+                    logger.debug("DEBUG: 分界点没有有意义的文本内容")
+                    return False
+    except Exception as e:
+        logger.error(f"ERROR: 处理分界点时出错: {e}")
+        return False
+
+    # 获取分界点之前的所有HTML
+    content_before = html_content[:cutoff_pos]
+
+    # 添加详细的调试信息
+    logger.debug(f"DEBUG: cutoff_pos = {cutoff_pos}")
+    logger.debug(f"DEBUG: content_before 长度 = {len(content_before)}")
+    if len(content_before) > 0:
+        logger.debug(f"DEBUG: content_before 前100字符 = {content_before[:100]}")
+    else:
+        logger.debug("DEBUG: content_before 为空！")
+
+    # 创建一个新的soup来分析分界点之前的内容
+    soup_before = BeautifulSoup(content_before, 'html.parser')
+
+    # 提取纯文本
+    text_before = clean_text(soup_before.get_text())
+
+    # 添加更多调试信息
+    logger.debug(f"DEBUG: text_before 长度 = {len(text_before)}")
+    if len(text_before) > 0:
+        logger.debug(f"DEBUG: text_before 内容 = {text_before[:50]}")
+    else:
+        logger.debug("DEBUG: text_before 为空！尝试提取原始文本...")
+        raw_text = soup_before.get_text()
+        logger.debug(f"DEBUG: 原始文本长度 = {len(raw_text)}")
+        if len(raw_text) > 0:
+            logger.debug(f"DEBUG: 原始文本 = {raw_text[:50]}")
+
+    # 【重要检查】如果text_before为空但content_before不为空，检查是否是正文容器
+    if len(text_before) == 0 and len(content_before) > 0:
+        # 检查content_before是否包含正文的特征
+        content_indicators = [
+            'class="content"',
+            'class="article"',
+            'class="main"',
+            'article',
+            'main'
+        ]
+
+        for indicator in content_indicators:
+            if indicator in content_before.lower():
+                logger.warning(f"WARNING: 分界点之前发现正文容器特征({indicator})，分割错误！")
+                logger.warning("WARNING: 表格在正文内部，应该放弃header提取！")
+                return True
+
+    if len(text_before) < 50:  # 文本太短，不足以判断
+        logger.debug(f"DEBUG: 分界点前文本太短({len(text_before)}字符)，跳过标点检查")
+        return False
+
+    # 【聪明的方法】统计标点符号
+    # 中文标点
+    chinese_punctuation = ['，', '。', '？', '！', '；', '、', '～', '…', '—']
+    # 英文标点
+    english_punctuation = [',', '.', '?', '!', ';', "'", '"']
+
+    # 计算标点符号数量
+    punctuation_count = 0
+    for char in text_before:
+        if char in chinese_punctuation or char in english_punctuation:
+            punctuation_count += 1
+
+    # 计算标点密度（每100个字符的标点数量）
+    punctuation_density = punctuation_count / len(text_before) * 100
+
+    logger.debug(f"DEBUG: 标点检查 - 文本长度={len(text_before)}, 标点数={punctuation_count}, 标点密度={punctuation_density:.2f}%")
+
+    # 判断逻辑（按优先级排序）：
+
+    # 1. 检查是否有句号、问号、感叹号（这些基本只在正文出现）
+    has_sentence_enders = any(p in text_before for p in ['。', '！', '？', '.', '!', '?'])
+    if has_sentence_enders:
+        logger.debug("DEBUG: 发现句子结束符(。！？)，判定为正文内容")
+        return True
+
+    # 2. 检查标点总数（3个以上标点通常意味着正文）
+    if punctuation_count >= 3:
+        logger.debug(f"DEBUG: 标点数量过多({punctuation_count}个)，判定为正文内容")
+        return True
+
+    # 3. 检查标点密度（每100个字符超过1个标点）
+    if punctuation_density > 1.0:
+        logger.debug(f"DEBUG: 标点密度过高({punctuation_density:.2f}%)，判定为正文内容")
+        return True
+
+    # 4. 检查是否有长句（包含逗号的长句）
+    sentences = text_before.split('。')  # 按句号分割
+    for sentence in sentences:
+        if len(sentence) > 20 and '，' in sentence:
+            logger.debug("DEBUG: 发现包含逗号的长句，判定为正文内容")
+            return True
+
+    logger.debug("DEBUG: 标点符号特征不明显，不判定为正文内容")
+    return False
+
+
+def check_content_before_cutoff_v2(soup: BeautifulSoup, cutoff_element: Tag, html_content: str) -> bool:
+    """
+    改进版保护机制：使用多维度分析检查分界点之前是否包含正文内容
+
+    Args:
+        soup: BeautifulSoup对象
+        cutoff_element: 分界点元素
+        html_content: 原始HTML内容
+
+    Returns:
+        bool: True表示有正文内容，应该放弃header提取
+    """
+    # 尝试找到分界点在原始HTML中的位置
+    try:
+        cutoff_str = str(cutoff_element)
+        cutoff_pos = html_content.find(cutoff_str)
+
+        if cutoff_pos == -1:
+            # 如果找不到，尝试简化元素字符串（去除多余属性）
+            import re
+            # 移除可能的样式和class属性
+            simplified_cutoff_str = re.sub(r'\s+style="[^"]*"', '', cutoff_str)
+            simplified_cutoff_str = re.sub(r'\s+class="[^"]*"', '', simplified_cutoff_str)
+            simplified_cutoff_str = re.sub(r'\s+id="[^"]*"', '', simplified_cutoff_str)
+            # 移除多余空白
+            simplified_cutoff_str = re.sub(r'\s+', ' ', simplified_cutoff_str)
+            cutoff_pos = html_content.find(simplified_cutoff_str)
+
+            if cutoff_pos == -1:
+                logger.warning(f"WARNING: 无法在原始HTML中找到分界点，分界点类型: {cutoff_element.name}")
+                logger.debug(f"DEBUG: 分界点内容预览: {cutoff_str[:200]}...")
+                logger.debug(f"DEBUG: 原始HTML长度: {len(html_content)}")
+                # 尝试只使用元素的文本内容进行匹配
+                text_content = clean_text(cutoff_element.get_text())
+                if text_content and len(text_content) > 5:  # 如果有意义的文本
+                    prefix = text_content[:15]
+                    prefix = prefix.rstrip()
+                    if prefix:
+                        text_pos = html_content.find(prefix)
+                        if text_pos != -1:
+                            logger.debug(f"DEBUG: 在原始HTML中找到了分界点的文本内容")
+                            cutoff_pos = text_pos
+                        else:
+                            logger.debug(f"DEBUG: 即使文本内容也无法找到: {prefix}")
+                            return False
+                else:
+                    logger.debug("DEBUG: 分界点没有有意义的文本内容")
+                    return False
+    except Exception as e:
+        logger.error(f"ERROR: 处理分界点时出错: {e}")
+        return False
+
+    # 获取分界点之前的所有HTML
+    content_before = html_content[:cutoff_pos]
+
+    # 创建一个新的soup来分析分界点之前的内容
+    soup_before = BeautifulSoup(content_before, 'html.parser')
+
+    # 【优先方法】基于标点符号的快速检测
+    logger.debug("DEBUG: 开始标点符号快速检测")
+    if check_by_punctuation(soup, cutoff_element, html_content):
+        logger.debug("DEBUG: 标点符号检测判定为正文内容")
+        return True
+    else:
+        logger.debug("DEBUG: 标点符号检测未发现正文特征，继续其他检测方法")
+
+    # 方法1：检查是否有明显的标题元素（不限于h标签）
+    potential_titles = []
+
+    # 检查所有可能包含标题的标签
+    for element in soup_before.find_all(['div', 'p', 'span', 'strong', 'b', 'td', 'th']):
+        scores = analyze_content_structure(element)
+        if scores['heading_score'] >= 3:  # 标题特征明显
+            potential_titles.append((element, scores))
+
+    if potential_titles:
+        logger.debug(f"DEBUG: 分界点之前发现 {len(potential_titles)} 个潜在的标题元素")
+        # logger.debug(f"DEBUG: {potential_titles} ")
+        # 如果找到明显的标题，很可能是正文内容
+        return True
+
+    # 方法2：内容密度分析
+    # 比较分界点前后的文本密度
+    content_after = html_content[cutoff_pos + len(str(cutoff_element)):]
+    soup_after = BeautifulSoup(content_after, 'html.parser')
+
+    text_before = clean_text(soup_before.get_text())
+    text_after = clean_text(soup_after.get_text())
+
+    # 如果分界点前的文本比分界点后的文本还多，说明分割错误
+    if len(text_before) > len(text_after) * 0.5:  # 前面文本超过后面的50%
+        logger.debug(f"DEBUG: 分界点前文本过多({len(text_before)} vs {len(text_after)})")
+        return True
+
+    # 方法3：检查是否包含文章结构特征
+    # 寻找连续的段落结构
+    paragraphs = soup_before.find_all('p')
+    if len(paragraphs) >= 2:  # 至少2个连续段落
+        # 检查这些段落的总长度
+        total_paragraph_text = ''.join([clean_text(p.get_text()) for p in paragraphs])
+        if len(total_paragraph_text) > 200:  # 总长度超过200字符
+            logger.debug(f"DEBUG: 发现 {len(paragraphs)} 个段落，总长度 {len(total_paragraph_text)}")
+            return True
+
+    # 方法4：检查是否有语义化内容标签
+    semantic_tags = ['article', 'main', 'section', 'aside', 'nav']
+    for tag in semantic_tags:
+        if soup_before.find(tag):
+            logger.debug(f"DEBUG: 分界点之前发现语义标签: {tag}")
+            return True
+
+    # 方法5：综合评分判断
+    # 对分界点前的每个块级元素进行评分
+    for element in soup_before.find_all(['div', 'section', 'article', 'p']):
+        scores = analyze_content_structure(element)
+        if scores['total_score'] >= 8:  # 阈值可调整
+            logger.debug(f"DEBUG: 发现高评分内容元素 (score={scores['total_score']})")
+            return True
+
+    logger.debug("DEBUG: 未检测到明显的正文内容特征")
+    return False
+
+ 
 def split_header_and_content_v2(html_content: str) -> tuple[str, str]:
     """
-    【表格基准向上扩散法】
+    【表格基准向上扩散法 - 改进版】
     新的分割策略：
     1. 找到表格元素（table标签）
     2. 从表格开始向上扩散寻找面包屑
     3. 如果向上扩散找到面包屑，说明顺序是：面包屑 → 表格 → 正文，以表格为分界点
     4. 如果向上扩散没有找到面包屑，用正则匹配面包屑位置
     5. 如果正则匹配到面包屑，说明面包屑在中间，回溯以面包屑为分界点
+    6. 【新增】保护机制：检查分界点之前是否包含正文内容，如果有则放弃header提取
     """
     if not html_content:
         return '', ''
@@ -582,12 +1003,43 @@ def split_header_and_content_v2(html_content: str) -> tuple[str, str]:
             logger.debug(f"DEBUG: 重复元数据元素处理完成，删除了 {metadata_removed_count} 个div表格")
             break
     # 2025.12.9不想干了！
-    # 针对于表格的html为div格式的勾八前端代码！TODO:可能造成正文被提取到了header里面
+    # 针对于表格的html为div格式的勾八前端代码！
+    # TODO:可能造成正文被提取到了header里面，目前增加了保护机制，不过通用性不高
     divs = soup.find_all('div')
     for div in divs:
         if get_element_score(div) == 2:
-            logger.debug("找到div格式的表格！")
-            table_element = div
+            # 检查是否是正文容器，如果是则跳过
+            div_class = ' '.join(div.get('class', []))
+            div_id = div.get('id', '')
+            div_aria_label = div.get('aria-label', '')
+
+            # 正文相关的关键词
+            content_keywords = [
+                'content', 'maincontent', 'article', 'main', 'text', 'detail',
+                'article-content', 'post-content', 'entry-content', 'page-content',
+                'content-area', 'main-content', 'article-body', 'post-body'
+            ]
+
+            # 转换为小写进行比较
+            div_class_lower = div_class.lower()
+            div_id_lower = div_id.lower()
+            div_aria_label_lower = div_aria_label.lower()
+
+            # 检查是否包含正文相关属性
+            is_content_container = False
+            if 'aria-label="文章正文"' in str(div) or div_aria_label_lower == '文章正文':
+                is_content_container = True
+                logger.debug(f"DEBUG: 跳过aria-label='文章正文'的正文容器")
+            else:
+                for keyword in content_keywords:
+                    if keyword in div_class_lower or keyword in div_id_lower:
+                        is_content_container = True
+                        logger.debug(f"DEBUG: 跳过包含'{keyword}'的正文容器")
+                        break
+
+            if not is_content_container:
+                logger.debug("找到div格式的表格！")
+                table_element = div
 
     uls = soup.find_all('ul')
     for ul in uls:
@@ -646,7 +1098,22 @@ def split_header_and_content_v2(html_content: str) -> tuple[str, str]:
                 r'[^>]*>[^>]*>[^>]*',  # 包含 > 的导航结构
                 r'.*?首页.*?>.*',     # 首页开头的导航
                 r'.*?当前位置.*',      # 包含当前位置
-                r'.*?位置[：:].*'      # 包含位置：
+                r'.*?位置[：:].*',     # 包含位置：
+                # 新增模式：匹配来源、发布时间等元数据信息
+                r'来源[：:].*?发布时间[：:].*',     # 来源+发布时间
+                r'来源[：:].*?[0-9]{4}-[0-9]{2}-[0-9]{2}',  # 来源+日期格式
+                r'发布时间[：:].*',    # 包含发布时间
+                r'来源[：:].*',        # 包含来源
+                # 匹配政府网站常见的元信息模式
+                r'.*?政府.*?发布时间.*',     # 政府机构+发布时间
+                r'.*?办公室.*发布时间.*',     # 办公室+发布时间
+                # 匹配时间格式 + 操作按钮
+                r'[0-9]{4}-[0-9]{2}-[0-9]{2}.*?(?:打印|保存|分享|收藏)',
+                r'[0-9]{4}-[0-9]{2}-[0-9]{2}\s+[0-9]{2}:[0-9]{2}.*?(?:打印|保存|分享)',
+                # 匹配文章元信息模式
+                r'.*?来源.*?时间.*',          # 通用的来源+时间模式
+                r'.*?发布.*?日期.*',          # 发布+日期模式
+                r'.*?编辑.*?时间.*'           # 编辑+时间模式
             ]
 
             found_breadcrumb_by_regex = False
@@ -679,7 +1146,21 @@ def split_header_and_content_v2(html_content: str) -> tuple[str, str]:
                 cutoff_element = table_element
                 logger.debug("DEBUG: 正则也未找到面包屑，表格是最上方的header")
 
-    # 4. 从分界点开始，提取所有header相关内容
+    # 4. 【保护机制】检查分界点之前是否包含正文内容
+    if cutoff_element:
+        logger.debug("DEBUG: -------------------------------------------------")
+        logger.debug("DEBUG: 开始执行保护机制v2，检查分界点之前是否有正文内容")
+        has_content_before = check_content_before_cutoff_v2(soup, cutoff_element, html_content)
+        if has_content_before:
+            logger.warning("WARNING: 检测到分界点之前包含正文内容，放弃header提取以保护正文")
+            # 返回空的header和清洗后的完整内容（soup已经经过remove_invisible_tags处理）
+            content_html = str(soup)
+            cleaned_content_html = clean_html_content_advanced(content_html)
+            return '', cleaned_content_html
+        else:
+            logger.debug("DEBUG: 分界点之前未检测到正文内容，继续执行header提取")
+
+    # 5. 从分界点开始，提取所有header相关内容
     # 策略：根据分界点类型，智能提取相关内容
 
     # 如果是表格内部元素，提升到整个表格
@@ -828,6 +1309,7 @@ def clean_html_content_with_split(html_content: str) -> str:
     # 首先分割header和content
     # header_html, content_html = split_header_and_content(html_content)
     header_html, content_html = split_header_and_content_v2(html_content)
+
     cleand_header_html = clean_html_content_advanced(header_html)
     # 然后对content部分进行高级清理
     cleaned_content_html = clean_html_content_advanced(content_html)
@@ -2508,7 +2990,14 @@ def calculate_content_container_score(container):
     logger.info(f"📝 内容特征分析:")
     logger.info(f"   首部关键词({header_content_count}个): {found_header_keywords}")
     logger.info(f"   尾部关键词({footer_content_count}个): {found_footer_keywords}")
-    
+    has_heading_tags = False
+    try:
+        heading_elements = container.xpath(".//h1 | .//h2 | .//h3 | .//h4 | .//h5 | .//h6")
+        if heading_elements:
+            has_heading_tags = True
+            logger.info(f"✓ 容器中发现{len(heading_elements)}个标题标签(h1-h6)，说明可能是正文内容")
+    except:
+        pass
     # 判断是否为长文本内容（正文内容通常很长）
     is_long_content = text_length > 3000
     
@@ -2517,55 +3006,115 @@ def calculate_content_container_score(container):
     
     if header_content_count >= 5:
         if is_long_content:
-            score -= 100
-            debug_info.append(f"⚠ 首部内容(长文本): -100 (发现{header_content_count}个关键词: {', '.join(found_header_keywords)})")
-            logger.info(f"⚠ 首部内容过多\文本较长，减分100")
+            if has_heading_tags:
+                # 长文本 + 有h标签，大幅减少惩罚
+                score -= 50
+                debug_info.append(f"⚠ 首部内容(长文本+有h): -50 (发现{header_content_count}个关键词: {', '.join(found_header_keywords)})")
+                logger.info(f"⚠ 首部内容过多但文本较长且有标题，大幅减分50")
+            else:
+                score -= 100
+                debug_info.append(f"⚠ 首部内容(长文本): -100 (发现{header_content_count}个关键词: {', '.join(found_header_keywords)})")
+                logger.info(f"⚠ 首部内容过多\文本较长，减分100")
         else:
-            score -= 300
-            debug_info.append(f"❌ 首部内容: -300 (发现{header_content_count}个关键词: {', '.join(found_header_keywords)})")
-            logger.info(f"❌ 首部内容过多，减分300")
+            if has_heading_tags:
+                # 短文本 + 有h标签，减半惩罚
+                score -= 150
+                debug_info.append(f"⚠ 首部内容(有h): -150 (发现{header_content_count}个关键词: {', '.join(found_header_keywords)})")
+                logger.info(f"⚠ 首部内容过多但有标题结构，减分150")
+            else:
+                score -= 300
+                debug_info.append(f"❌ 首部内容: -300 (发现{header_content_count}个关键词: {', '.join(found_header_keywords)})")
+                logger.info(f"❌ 首部内容过多，减分300")
     # 大幅减分首部尾部内容 - 但对长文本内容宽容处理
     elif header_content_count >= 3:
         if is_long_content:
-            # 长文本内容，轻微减分
-            score -= 1
-            debug_info.append(f"⚠ 首部内容(长文本): -1 (发现{header_content_count}个关键词: {', '.join(found_header_keywords)})")
-            logger.info(f"⚠ 首部内容过多但文本较长，轻微减分1")
+            if has_heading_tags:
+                # 长文本 + 有h标签，不减分
+                score -= 0
+                debug_info.append(f"✓ 首部内容(长文本+有h): -0 (发现{header_content_count}个关键词: {', '.join(found_header_keywords)})")
+                logger.info(f"✓ 首部内容较多但文本较长且有标题，不减分")
+            else:
+                # 长文本内容，轻微减分
+                score -= 1
+                debug_info.append(f"⚠ 首部内容(长文本): -1 (发现{header_content_count}个关键词: {', '.join(found_header_keywords)})")
+                logger.info(f"⚠ 首部内容过多但文本较长，轻微减分1")
         else:
-            score -= 300
-            debug_info.append(f"❌ 首部内容: -300 (发现{header_content_count}个关键词: {', '.join(found_header_keywords)})")
-            logger.info(f"❌ 首部内容过多，减分300")
+            if has_heading_tags:
+                # 短文本 + 有h标签，减半惩罚
+                score -= 150
+                debug_info.append(f"⚠ 首部内容(有h): -150 (发现{header_content_count}个关键词: {', '.join(found_header_keywords)})")
+                logger.info(f"⚠ 首部内容过多但有标题结构，减分150")
+            else:
+                score -= 300
+                debug_info.append(f"❌ 首部内容: -300 (发现{header_content_count}个关键词: {', '.join(found_header_keywords)})")
+                logger.info(f"❌ 首部内容过多，减分300")
     elif header_content_count >= 2:
         if is_long_content:
-            # 长文本内容，轻微减分
-            score -= 1
-            debug_info.append(f"⚠ 首部内容(长文本): -1 (发现{header_content_count}个关键词: {', '.join(found_header_keywords)})")
-            logger.info(f"⚠ 首部内容较多但文本较长，轻微减分1")
+            if has_heading_tags:
+                # 长文本 + 有h标签，不减分
+                score -= 0
+                debug_info.append(f"✓ 首部内容(长文本+有h): -0 (发现{header_content_count}个关键词: {', '.join(found_header_keywords)})")
+                logger.info(f"✓ 首部内容较多但文本较长且有标题，不减分")
+            else:
+                # 长文本内容，轻微减分
+                score -= 1
+                debug_info.append(f"⚠ 首部内容(长文本): -1 (发现{header_content_count}个关键词: {', '.join(found_header_keywords)})")
+                logger.info(f"⚠ 首部内容较多但文本较长，轻微减分1")
         else:
-            score -= 150
-            debug_info.append(f"❌ 首部内容: -150 (发现{header_content_count}个关键词: {', '.join(found_header_keywords)})")
-            logger.info(f"❌ 首部内容较多，减分150")
+            if has_heading_tags:
+                # 短文本 + 有h标签，轻微减分
+                score -= 75
+                debug_info.append(f"⚠ 首部内容(有h): -75 (发现{header_content_count}个关键词: {', '.join(found_header_keywords)})")
+                logger.info(f"⚠ 首部内容较多但有标题结构，减分75")
+            else:
+                score -= 150
+                debug_info.append(f"❌ 首部内容: -150 (发现{header_content_count}个关键词: {', '.join(found_header_keywords)})")
+                logger.info(f"❌ 首部内容较多，减分150")
     
     if footer_content_count >= 3:
         if is_long_content:
-            # 长文本内容，轻微减分
-            score -= 100
-            debug_info.append(f"⚠ 尾部内容(长文本): -100 (发现{footer_content_count}个关键词: {', '.join(found_footer_keywords)})")
-            logger.info(f"⚠ 尾部内容过多但文本较长，轻微减分100")
+            if has_heading_tags:
+                # 长文本 + 有h标签，大幅减少惩罚
+                score -= 50
+                debug_info.append(f"⚠ 尾部内容(长文本+有h): -50 (发现{footer_content_count}个关键词: {', '.join(found_footer_keywords)})")
+                logger.info(f"⚠ 尾部内容过多但文本较长且有标题，大幅减分50")
+            else:
+                # 长文本内容，轻微减分
+                score -= 100
+                debug_info.append(f"⚠ 尾部内容(长文本): -100 (发现{footer_content_count}个关键词: {', '.join(found_footer_keywords)})")
+                logger.info(f"⚠ 尾部内容过多但文本较长，轻微减分100")
         else:
-            score -= 300
-            debug_info.append(f"❌ 尾部内容: -300 (发现{footer_content_count}个关键词: {', '.join(found_footer_keywords)})")
-            logger.info(f"❌ 尾部内容过多，减分300")
+            if has_heading_tags:
+                # 短文本 + 有h标签，减半惩罚
+                score -= 150
+                debug_info.append(f"⚠ 尾部内容(有h): -150 (发现{footer_content_count}个关键词: {', '.join(found_footer_keywords)})")
+                logger.info(f"⚠ 尾部内容过多但有标题结构，减分150")
+            else:
+                score -= 300
+                debug_info.append(f"❌ 尾部内容: -300 (发现{footer_content_count}个关键词: {', '.join(found_footer_keywords)})")
+                logger.info(f"❌ 尾部内容过多，减分300")
     elif footer_content_count >= 2:
         if is_long_content:
-            # 长文本内容，轻微减分
-            score -= 50
-            debug_info.append(f"⚠ 尾部内容(长文本): -50 (发现{footer_content_count}个关键词: {', '.join(found_footer_keywords)})")
-            logger.info(f"⚠ 尾部内容较多但文本较长，轻微减分50")
+            if has_heading_tags:
+                # 长文本 + 有h标签，不减分
+                score -= 0
+                debug_info.append(f"✓ 尾部内容(长文本+有h): -0 (发现{footer_content_count}个关键词: {', '.join(found_footer_keywords)})")
+                logger.info(f"✓ 尾部内容较多但文本较长且有标题，不减分")
+            else:
+                # 长文本内容，轻微减分
+                score -= 50
+                debug_info.append(f"⚠ 尾部内容(长文本): -50 (发现{footer_content_count}个关键词: {', '.join(found_footer_keywords)})")
+                logger.info(f"⚠ 尾部内容较多但文本较长，轻微减分50")
         else:
-            score -= 150
-            debug_info.append(f"❌ 尾部内容: -150 (发现{footer_content_count}个关键词: {', '.join(found_footer_keywords)})")
-            logger.info(f"❌ 尾部内容较多，减分150")
+            if has_heading_tags:
+                # 短文本 + 有h标签，轻微减分
+                score -= 75
+                debug_info.append(f"⚠ 尾部内容(有h): -75 (发现{footer_content_count}个关键词: {', '.join(found_footer_keywords)})")
+                logger.info(f"⚠ 尾部内容较多但有标题结构，减分75")
+            else:
+                score -= 150
+                debug_info.append(f"❌ 尾部内容: -150 (发现{footer_content_count}个关键词: {', '.join(found_footer_keywords)})")
+                logger.info(f"❌ 尾部内容较多，减分150")
     
     # 如果已经是严重负分，不再继续计算（但对长文本内容更宽容）
     if score < -200 and not is_long_content:
