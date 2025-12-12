@@ -392,8 +392,20 @@ def clean_html_content_advanced(html_content: str) -> str:
 
 def remove_invisible_tags(soup: BeautifulSoup):
     """清理干扰元素"""
-    for tag in soup(['script', 'style', 'noscript', 'iframe', 'svg', 'meta', 'link', 'input']):
+    for tag in soup(['script', 'style', 'noscript','iframe', 'svg', 'meta', 'link', 'input']):
         tag.decompose()
+
+    # TODO:等到之后有这个下载需求的时候，把下面的注释解开，然后上面的iframe去掉
+    # 单独处理iframe标签，保留包含视频或PDF的iframe
+    # for tag in soup('iframe'):
+    #     if tag.get('src'):
+    #         src = tag.get('src').lower()
+    #         if src.endswith(('.mp4', '.pdf')):
+    #             continue  
+    #     if tag.find('video'):
+    #         continue 
+    #     tag.decompose()
+
     for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
         comment.extract()
     for hidden in soup.find_all(attrs={"hidden": True}):
@@ -2189,9 +2201,9 @@ def clean_container_html(container_html: str) -> str:
             if img:
                 # 检查src属性是否包含base64
                 src = img.get('src', '')
-                if 'base64' in src.lower():
+                if 'base64' in src.lower() or 'data:image' in src.lower():
                     img.decompose()
-                    logger.info(f"删除包含base64的img标签")
+                    logger.info(f"删除包含base64或data:image的img标签")
 
         # 1. 查找所有有style属性的元素
         styled_elements = soup.find_all(attrs={"style": True})
