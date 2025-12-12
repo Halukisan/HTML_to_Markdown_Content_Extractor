@@ -13,50 +13,51 @@ import logging
 import os
 from logging.handlers import RotatingFileHandler
 import datetime
+from typing import Tuple
 # 用于测试--------------------------------------------------------------------------
-def setup_logging():
-    """设置日志配置 - 输出到带时间戳的日志文件 + 控制台"""
-    # 生成时间戳文件名
-    log_dir = "logs"
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_file = os.path.join(log_dir, f"xpath_processing_{timestamp}.log")
-    
-    # 创建日志目录
-    os.makedirs(log_dir, exist_ok=True)
-    
-    # Handler: 文件（可选轮转）+ 控制台
-    file_handler = logging.FileHandler(log_file, encoding='utf-8')
-    console_handler = logging.StreamHandler()
-    
-    # 日志格式
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    file_handler.setFormatter(formatter)
-    console_handler.setFormatter(formatter)
-    
-    # 配置 logger
-    logging.basicConfig(
-        level=logging.DEBUG,
-        handlers=[file_handler, console_handler]
-    )
-    
-    return logging.getLogger(__name__)
-# 用于部署---------------------------------------------------------------------------
-# 配置日志 - 高并发优化版本
 # def setup_logging():
-#     """设置日志配置 - 减少IO开销"""
-#     # 生产环境只记录WARNING及以上级别
-#     log_level = logging.WARNING  # 从INFO改为WARNING
+#     """设置日志配置 - 输出到带时间戳的日志文件 + 控制台"""
+#     # 生成时间戳文件名
+#     log_dir = "logs"
+#     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+#     log_file = os.path.join(log_dir, f"xpath_processing_{timestamp}.log")
     
-#     # 配置日志格式（简化格式）
+#     # 创建日志目录
+#     os.makedirs(log_dir, exist_ok=True)
+    
+#     # Handler: 文件（可选轮转）+ 控制台
+#     file_handler = logging.FileHandler(log_file, encoding='utf-8')
+#     console_handler = logging.StreamHandler()
+    
+#     # 日志格式
+#     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+#     file_handler.setFormatter(formatter)
+#     console_handler.setFormatter(formatter)
+    
+#     # 配置 logger
 #     logging.basicConfig(
-#         level=log_level,
-#         format='%(levelname)s - %(message)s',  # 简化格式
-#         handlers=[
-#             logging.StreamHandler()  # 只输出到控制台，减少文件IO
-#         ]
+#         level=logging.DEBUG,
+#         handlers=[file_handler, console_handler]
 #     )
     
 #     return logging.getLogger(__name__)
+# 用于部署---------------------------------------------------------------------------
+# 配置日志 - 高并发优化版本
+def setup_logging():
+    """设置日志配置 - 减少IO开销"""
+    # 生产环境只记录WARNING及以上级别
+    log_level = logging.WARNING  # 从INFO改为WARNING
+    
+    # 配置日志格式（简化格式）
+    logging.basicConfig(
+        level=log_level,
+        format='%(levelname)s - %(message)s',  # 简化格式
+        handlers=[
+            logging.StreamHandler()  # 只输出到控制台，减少文件IO
+        ]
+    )
+    
+    return logging.getLogger(__name__)
 
 
 # 初始化日志
@@ -158,7 +159,7 @@ def delete_short_tags(soup: BeautifulSoup, tag_text: str) -> None:
         # 检查前后是否是长文字
         # 如果整个父标签文本很短（小于50个字符），认为可以删除
         if len(parent_text) < 50:
-            print(f"---------------parent_text::{parent_text}")
+            # print(f"---------------parent_text::{parent_text}")
             # 检查是否匹配确切的目标文本
             if tag_text in parent_text:
                 # 进一步检查，确保不是正文中的内容
@@ -167,7 +168,7 @@ def delete_short_tags(soup: BeautifulSoup, tag_text: str) -> None:
                     keyword in parent_text.lower()
                     for keyword in ['文章', '内容', '正文', '详情', '更多信息']
                 ):
-                    print("-----------------")
+                    # print("-----------------")
                     elements_to_delete.append(parent)
 
     # 安全删除：在收集完成后统一删除
@@ -968,7 +969,7 @@ def check_content_before_cutoff_v2(soup: BeautifulSoup, cutoff_element: Tag, htm
     return False
 
  
-def split_header_and_content_v2(html_content: str) -> tuple[str, str]:
+def split_header_and_content_v2(html_content: str) -> Tuple[str, str]:
     """
     【表格基准向上扩散法 - 改进版】
     新的分割策略：
@@ -2257,30 +2258,38 @@ def clean_markdown_content(markdown_content: str) -> str:
     Returns:
         str: 清理后的Markdown内容
     """
-    # 移除多余的空行
-    markdown_content = re.sub(r'\n\s*\n\s*\n', '\n\n', markdown_content)
+    if not markdown_content:
+        return ""
+    markdown_content = markdown_content.replace('\\n', '\n')
+
+    # 1. 按行分割
+    lines = markdown_content.splitlines()
     
-    # 移除行首行尾的空白字符
-    lines = [line.strip() for line in markdown_content.split('\n')]
-    
-    # 过滤空行，但保留段落间的分隔
     cleaned_lines = []
     prev_empty = False
     
     for line in lines:
-        if line.strip():
-            cleaned_lines.append(line)
+        # 2. 去除每一行首尾的空白字符
+        stripped_line = line.strip()
+        
+        if stripped_line:
+            # 如果这行真的有内容（不仅仅是空格或换行符）
+            cleaned_lines.append(stripped_line)
             prev_empty = False
         elif not prev_empty:
+            # 如果这行是空的，且前一行不是空的（即：遇到了新的段落间隔）
+            # 我们添加一个空字符串，这样最后 join 时会形成双换行 "\n\n"
             cleaned_lines.append('')
             prev_empty = True
-    
-    # 移除开头和结尾的空行
+            
+    # 3. 移除列表开头和结尾可能残留的空行
     while cleaned_lines and not cleaned_lines[0]:
         cleaned_lines.pop(0)
     while cleaned_lines and not cleaned_lines[-1]:
         cleaned_lines.pop()
     
+    # 4. 用单个换行符连接
+    # 原理：['标题', '', '正文'] -> "标题\n\n正文"
     return '\n'.join(cleaned_lines)
 
 def find_main_content_in_cleaned_html(cleaned_body, original_body=None):
@@ -4210,7 +4219,7 @@ def html_to_markdown_simple(html_content: str) -> str:
         markdown_content = converter.convert(html_content)
 
         # 清理多余空行
-        markdown_content = re.sub(r'\n\s*\n\s*\n', '\n\n', markdown_content)
+        markdown_content = clean_markdown_content(markdown_content)
 
         return markdown_content.strip()
 
