@@ -13,6 +13,7 @@ from typing import Dict, List, Optional, Tuple
 import logging
 import uuid
 import json
+import gradio as gr
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -95,7 +96,49 @@ class CustomMarkdownConverter(MarkdownConverter):
 
         return f'\n{html_output}\n'
 
+def clean_markdown_content(markdown_content: str) -> str:
+    """
+    清理Markdown内容
+    
+    Args:
+        markdown_content: 原始Markdown内容
+        
+    Returns:
+        str: 清理后的Markdown内容
+    """
+    if not markdown_content:
+        return ""
+    markdown_content = markdown_content.replace('\\n', '\n')
 
+    # 1. 按行分割
+    lines = markdown_content.splitlines()
+    
+    cleaned_lines = []
+    prev_empty = False
+    
+    for line in lines:
+        # 2. 去除每一行首尾的空白字符
+        stripped_line = line.strip()
+        
+        if stripped_line:
+            # 如果这行真的有内容（不仅仅是空格或换行符）
+            cleaned_lines.append(stripped_line)
+            prev_empty = False
+        elif not prev_empty:
+            # 如果这行是空的，且前一行不是空的（即：遇到了新的段落间隔）
+            # 我们添加一个空字符串，这样最后 join 时会形成双换行 "\n\n"
+            cleaned_lines.append('')
+            prev_empty = True
+            
+    # 3. 移除列表开头和结尾可能残留的空行
+    while cleaned_lines and not cleaned_lines[0]:
+        cleaned_lines.pop(0)
+    while cleaned_lines and not cleaned_lines[-1]:
+        cleaned_lines.pop()
+    
+    # 4. 用单个换行符连接
+    # 原理：['标题', '', '正文'] -> "标题\n\n正文"
+    return '\n'.join(cleaned_lines)
 class HTMLToMarkdownConverter:
     def __init__(self, output_dir: str = "downloads", base_url: str = ""):
         """
@@ -425,60 +468,6 @@ class HTMLToMarkdownConverter:
             logger.warning(f"清理表格HTML时出错: {str(e)}")
             return table_html
 
-    def clean_html_content(self, html_content: str) -> str:
-        """
-        清理HTML内容
-        """
-        try:
-            soup = BeautifulSoup(html_content, 'html.parser')
-
-            # 移除不需要的标签
-            for tag in soup.find_all(['script', 'style', 'meta', 'link', 'noscript']):
-                tag.decompose()
-
-            # 保留属性列表
-            essential_attributes = {
-                'div': [], 'p': [], 'span': [],
-                'table': ['border', 'cellpadding', 'cellspacing'],
-                'tr': [], 'td': ['colspan', 'rowspan'], 'th': ['colspan', 'rowspan'],
-                'ul': [], 'ol': [], 'li': [],
-                'a': ['href', 'target'],
-                'img': ['src'],
-                'video': ['src', 'poster', 'controls'],
-                'source': ['src'],
-                'iframe': ['src'],
-                'br': [], 'hr': []
-            }
-
-            def clean_attributes(tag):
-                if tag.name is None:
-                    return
-
-                allowed_attrs = essential_attributes.get(tag.name, [])
-                
-                # 简单的 style 清理逻辑 (复用 table 清理中的逻辑或简化)
-                if tag.has_attr('style'):
-                    # 这里为了演示简化，如果不是必须保留样式的标签，可以考虑直接移除style
-                    # 或者保留你之前的 clean_style_attribute 逻辑
-                    del tag['style']
-
-                attrs_to_remove = [attr for attr in tag.attrs if attr not in allowed_attrs]
-                for attr in attrs_to_remove:
-                    del tag[attr]
-
-            for tag in soup.find_all(True):
-                clean_attributes(tag)
-
-            # 专门清理表格内部
-            for table in soup.find_all('table'):
-                cleaned_table = self.clean_table_html(str(table))
-                table.replace_with(BeautifulSoup(cleaned_table, 'html.parser'))
-
-            return str(soup)
-
-        except Exception as e:
-            logger.warning(f"清理HTML内容时出错: {str(e)}")
-            return html_content
 
     def is_download_link(self, url: str) -> bool:
         """判断是否是下载链接"""
@@ -514,20 +503,17 @@ class HTMLToMarkdownConverter:
         主要转换流程
         """
         try:
-            # 1. 清洗HTML
-            cleaned_html = self.clean_html_content(html_content)
             async with aiofiles.open("test_output.html",'w',encoding='utf-8')as f:
-                await f.write(cleaned_html)
+                await f.write(html_content)
         
-            print("✓ 已保存清洗后的HTML到 test_output.html")
             # 2. 收集下载链接
-            download_tasks = await self.collect_download_urls(cleaned_html)
+            download_tasks = await self.collect_download_urls(html_content)
 
             # 3. 下载文件
             url_to_local_path = await self.download_all_files(download_tasks)
 
             # 4. 替换链接
-            html_with_local_paths = await self.replace_urls_with_local_paths(cleaned_html, url_to_local_path)
+            html_with_local_paths = await self.replace_urls_with_local_paths(html_content, url_to_local_path)
 
             # 5. 转换为 Markdown
             markdown_content = self.html_to_markdown(html_with_local_paths)
@@ -543,9 +529,6 @@ class HTMLToMarkdownConverter:
         except Exception as e:
             logger.error(f"转换过程中发生错误: {str(e)}")
             raise
-
-
-
 
 class URLPlaceholderReplacer:
     """
@@ -751,8 +734,13 @@ async def main():
     if response.status_code == 200:
         try:
             result = response.json()
-            markdown_content = result.get("markdown_content", response.text)  
-            html_content = result.get("html_content",response.text)
+            markdown_content = result.get("cl_content_md", response.text)  
+            html_content = result.get("cl_content_html",response.text)
+
+            # 第二类型
+            html_without_holder = result.get("cl_content_html", response.text)
+            md_without_holder = result.get("cl_content_md", response.text)
+            text_without_holder = result.get("cl_content_text", response.text)
         except ValueError:
             markdown_content = response.text
     else:
@@ -772,8 +760,403 @@ async def main():
         print(f"转换失败：{str(e)}")
 
 
-if __name__ == "__main__":
-    asyncio.run(main())
-    asyncio.run(test_placeholder_replacement())
+def process_content(url_input, html_input):
+    """
+    处理输入的内容并返回结果
+    """
+    try:
 
+        html_content = html_input
+        url = url_input
+
+        if not html_content:
+            return "HTML内容不能为空", "", "", "", "", "", ""
+
+        # 处理base_url
+        if url:
+            base_url = process_base_url(url)
+        else:
+            base_url = ""
+
+        # 调用API获取结果
+        response = requests.post(
+            "http://192.168.182.41:8000/extract",
+            json={
+                "html_content": html_content,
+                "url": url
+            },
+            timeout=30
+        )
+
+        if response.status_code != 200:
+            return f"API调用失败: {response.status_code}", "", "", "", "", "", ""
+
+        result = response.json()
+
+        # 不带占位符的结果
+        html_without_holder = result.get("cl_content_html", "")
+        md_without_holder = result.get("cl_content_md", "")
+        text_without_holder = result.get("cl_content_text", "")
+
+        # 处理带占位符的结果
+        replacer = URLPlaceholderReplacer()
+        html_with_placeholders = replacer.replace_urls_with_placeholders(html_content)
+
+        # 转换带占位符的Markdown
+        converter = CustomMarkdownConverter(
+            heading_style="ATX",
+            bullets="*",
+            strip=['script', 'style']
+        )
+        md_with_placeholders = converter.convert(html_with_placeholders)
+        md_with_placeholders = clean_markdown_content(md_with_placeholders)
+
+        # 生成带占位符的纯文本
+        soup = BeautifulSoup(html_with_placeholders, 'html.parser')
+        for script in soup(["script", "style"]):
+            script.decompose()
+        text_with_placeholders = soup.get_text()
+        lines = (line.strip() for line in text_with_placeholders.splitlines())
+        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+        text_with_placeholders = '\n'.join(chunk for chunk in chunks if chunk)
+
+        # 生成占位符映射关系
+        placeholder_mapping = json.dumps(replacer.placeholder_mapping, ensure_ascii=False, indent=2)
+
+        return ("处理成功",
+                html_with_placeholders, md_with_placeholders, text_with_placeholders, placeholder_mapping,
+                html_without_holder, md_without_holder, text_without_holder)
+
+    except Exception as e:
+        return f"处理出错: {str(e)}", "", "", "", "", "", ""
+
+def process_base_url(url):
+    """
+    处理base_url，去除最后一个/后面的内容
+    """
+    if not url:
+        return ""
+
+    try:
+        from urllib.parse import urlparse
+        url_obj = urlparse(url)
+        pathname = url_obj.path
+
+        # 找到最后一个/的位置
+        last_slash_index = pathname.rfind('/')
+        if last_slash_index > 0:
+            url_obj = url_obj._replace(path=pathname[:last_slash_index + 1])
+        elif pathname == '/':
+            # 根路径保持原样
+            pass
+        else:
+            # 没有/，添加一个
+            url_obj = url_obj._replace(path='/')
+
+        return url_obj.geturl()
+    except Exception as e:
+        logger.error(f"URL处理错误: {e}")
+        return url
+
+def create_gradio_interface():
+    """
+    创建Gradio界面
+    """
+    with gr.Blocks(title="HTML转Markdown处理器", theme=gr.themes.Soft()) as interface:
+        gr.Markdown("# HTML转Markdown处理器")
+        gr.Markdown("将HTML内容转换为带占位符或不带占位符的Markdown格式")
+
+        with gr.Row():
+            # 左侧输入面板
+            with gr.Column(scale=1):
+                gr.Markdown("## 输入参数")
+
+                url_input = gr.Textbox(
+                    label="URL地址",
+                    placeholder="请输入URL地址，例如：https://example.com",
+                    lines=1
+                )
+
+                html_json_input = gr.Textbox(
+                    label="HTML内容",
+                    placeholder='请输入HTML内容',
+                    lines=15
+                )
+
+                process_btn = gr.Button("处理内容", variant="primary", size="lg")
+
+                status_output = gr.Textbox(label="处理状态", interactive=False)
+
+            # 右侧输出面板
+            with gr.Column(scale=2):
+                gr.Markdown("## 输出结果")
+
+                with gr.Tabs():
+                    # 带占位符的标签页
+                    with gr.TabItem("带占位符"):
+                        with gr.Tabs():
+                            with gr.TabItem("HTML"):
+                                placeholder_html_output = gr.Code(
+                                    label="带占位符的HTML",
+                                    language="html",
+                                    lines=20,
+                                    max_lines=30
+                                )
+
+                            with gr.TabItem("Markdown"):
+                                placeholder_md_output = gr.Code(
+                                    label="带占位符的Markdown",
+                                    language="markdown",
+                                    lines=20,
+                                    max_lines=30
+                                )
+
+                            with gr.TabItem("纯文本"):
+                                placeholder_text_output = gr.Code(
+                                    label="带占位符的纯文本",
+                                    language="text",
+                                    lines=20,
+                                    max_lines=30
+                                )
+
+                            with gr.TabItem("映射关系"):
+                                placeholder_mapping_output = gr.Code(
+                                    label="占位符映射关系 (JSON)",
+                                    language="json",
+                                    lines=20,
+                                    max_lines=30
+                                )
+
+                    # 不带占位符的标签页
+                    with gr.TabItem("不带占位符"):
+                        with gr.Tabs():
+                            with gr.TabItem("HTML"):
+                                no_placeholder_html_output = gr.Code(
+                                    label="不带占位符的HTML",
+                                    language="html",
+                                    lines=20,
+                                    max_lines=30
+                                )
+
+                            with gr.TabItem("Markdown"):
+                                no_placeholder_md_output = gr.Code(
+                                    label="不带占位符的Markdown",
+                                    language="markdown",
+                                    lines=20,
+                                    max_lines=30
+                                )
+
+                            with gr.TabItem("纯文本"):
+                                no_placeholder_text_output = gr.Code(
+                                    label="不带占位符的纯文本",
+                                    language="text",
+                                    lines=20,
+                                    max_lines=30
+                                )
+
+        # 绑定处理函数
+        process_btn.click(
+            fn=process_content,
+            inputs=[url_input, html_json_input],
+            outputs=[
+                status_output,
+                placeholder_html_output,
+                placeholder_md_output,
+                placeholder_text_output,
+                placeholder_mapping_output,
+                no_placeholder_html_output,
+                no_placeholder_md_output,
+                no_placeholder_text_output
+            ]
+        )
+
+        # 添加示例
+        gr.Markdown("## 使用示例")
+        gr.Examples(
+            examples=[
+                [
+                    "https://www.gov.cn/zhengce/202510/content_7046643.htm",
+                    '{\n  "html_content": "<html><body><h1>测试标题</h1><p>测试内容</p><img src=\\"test.jpg\\" /><video src=\\"test.mp4\\"></video></body></html>",\n  "url": "https://www.gov.cn/zhengce/202510/content_7046643.htm"\n}'
+                ]
+            ],
+            inputs=[url_input, html_json_input]
+        )
+
+    return interface
+
+def html_to_text(html_content: str) -> str:
+    """
+    将HTML转换为纯文本
+    """
+    soup = BeautifulSoup(html_content, 'html.parser')
+
+    # 移除script和style标签
+    for script in soup(["script", "style"]):
+        script.decompose()
+
+    # 获取文本内容
+    text = soup.get_text()
+
+    # 清理多余的空白字符
+    lines = (line.strip() for line in text.splitlines())
+    chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+    text = '\n'.join(chunk for chunk in chunks if chunk)
+
+    return text
+
+def process_frontend_content(url_input, html_json_input):
+    """
+    前端处理函数
+    """
+    try:
+        html_content = html_json_input
+        url = url_input
+
+        # 处理base_url
+        base_url = process_base_url(url) if url else ""
+        html_without_holder = ""
+        # 调用API获取第二类型的结果（不带占位符）
+        try:
+            response = requests.post(
+                "http://192.168.182.41:8321/extract",
+                # "http://127.0.0.1:8321/extract",
+                json={
+                    "html_content": html_content,
+                    "url": url
+                },
+                timeout=30
+            )
+
+            if response.status_code == 200:
+                result = response.json()
+                # 第二类型：不带占位符的结果
+                html_without_holder = result.get("cl_content_html", "")
+                md_without_holder = result.get("cl_content_md", "")
+                text_without_holder = result.get("cl_content_text", "")
+            else:
+                html_without_holder = f"API调用失败: {response.status_code}"
+                md_without_holder = f"API调用失败: {response.status_code}"
+                text_without_holder = f"API调用失败: {response.status_code}"
+        except Exception as e:
+            html_without_holder = f"API调用出错: {str(e)}"
+            md_without_holder = f"API调用出错: {str(e)}"
+            text_without_holder = f"API调用出错: {str(e)}"
+
+        # 处理第一类型：带占位符的结果
+        replacer = URLPlaceholderReplacer()
+        html_with_placeholders = replacer.replace_urls_with_placeholders(html_without_holder)
+
+        # 转换带占位符的Markdown
+        converter = CustomMarkdownConverter(
+            heading_style="ATX",
+            bullets="*",
+            strip=['script', 'style']
+        )
+        md_with_placeholders = converter.convert(html_with_placeholders)
+        md_with_placeholders = clean_markdown_content(md_with_placeholders)
+
+        # 生成带占位符的纯文本
+        text_with_placeholders = html_to_text(html_with_placeholders)
+
+        # 生成占位符映射关系
+        placeholder_mapping = json.dumps(replacer.placeholder_mapping, ensure_ascii=False, indent=2)
+
+        return ("处理成功",
+                html_with_placeholders, md_with_placeholders, text_with_placeholders, placeholder_mapping,
+                html_without_holder, md_without_holder, text_without_holder)
+
+    except Exception as e:
+        return f"处理出错: {str(e)}", "", "", "", "", "", ""
+
+def create_simple_gradio_interface():
+    """
+    创建简单的Gradio界面
+    """
+    with gr.Blocks(title="HTML处理器", theme=gr.themes.Default()) as interface:
+        gr.Markdown("# HTML转Markdown处理器")
+
+        with gr.Row():
+            # 左侧输入面板
+            with gr.Column(scale=1):
+                gr.Markdown("## 输入")
+
+                # 小的URL输入框
+                url_input = gr.Textbox(
+                    label="URL",
+                    placeholder="输入URL",
+                    lines=1
+                )
+
+                # 大的HTML输入框
+                html_input = gr.Textbox(
+                    label="HTML内容",
+                    placeholder='输入HTML',
+                    lines=25
+                )
+
+                process_btn = gr.Button("处理", variant="primary", size="lg")
+
+                status = gr.Textbox(label="状态", interactive=False)
+
+            # 右侧输出面板
+            with gr.Column(scale=2):
+                gr.Markdown("## 输出")
+
+                with gr.Tabs():
+                    # 带占位符标签页
+                    with gr.TabItem("带占位符"):
+                        with gr.Tabs():
+                            with gr.TabItem("HTML"):
+                                placeholder_html = gr.Code(language="html", lines=20)
+                            with gr.TabItem("Markdown"):
+                                placeholder_md = gr.Code(language="markdown", lines=20)
+                            with gr.TabItem("文本"):
+                                placeholder_text = gr.Code(language="markdown", lines=20)
+                            with gr.TabItem("映射"):
+                                placeholder_map = gr.Code(language="json", lines=20)
+
+                    # 不带占位符标签页
+                    with gr.TabItem("不带占位符"):
+                        with gr.Tabs():
+                            with gr.TabItem("HTML"):
+                                no_placeholder_html = gr.Code(language="html", lines=20)
+                            with gr.TabItem("Markdown"):
+                                no_placeholder_md = gr.Code(language="markdown", lines=20)
+                            with gr.TabItem("文本"):
+                                no_placeholder_text = gr.Code(language="markdown", lines=20)
+
+        # 绑定处理函数
+        process_btn.click(
+            fn=process_frontend_content,
+            inputs=[url_input, html_input],
+            outputs=[
+                status,
+                placeholder_html, placeholder_md, placeholder_text, placeholder_map,
+                no_placeholder_html, no_placeholder_md, no_placeholder_text
+            ]
+        )
+
+        # 添加示例
+        gr.Examples([
+            [
+                "https://www.gov.cn/zhengce/202510/content_7046643.htm",
+                '{\n  "html_content": "<html><body><h1>标题</h1><img src=\\"test.jpg\\"/></body></html>",\n  "url": "https://www.gov.cn/zhengce/202510/content_7046643.htm"\n}'
+            ]
+        ], inputs=[url_input, html_input])
+
+    return interface
+
+if __name__ == "__main__":
+    # 启动Gradio界面
+    interface = create_simple_gradio_interface()
+    interface.launch(
+        server_name="0.0.0.0",
+        server_port=7860,
+        share=False
+    )
+
+
+# 输出的文件有两个类型的，
+# 第一个类型是有占位符的：分别输出四个文件，有占位符的html，有占位符的md，文件和占位符的匹配关系文件，有占位符的纯文本。
+# 第二个类型的是无占位符的：分别输出三个文件，无占位符的html，无占位符的md，无占位符的纯文本。
 
