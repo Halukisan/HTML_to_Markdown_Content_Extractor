@@ -1,0 +1,15 @@
+aiohttp
+aiofiles
+requests
+beautifulsoup4
+markdownify
+gradio
+fastapi==0.115.11
+uvicorn[standard]==0.33.0
+pydantic==2.10.6
+pydantic-core==2.27.2
+lxml==5.4.0
+selenium==4.27.1
+PyYAML==6.0.2
+DrissionPage==4.1.0.17
+gunicorn
