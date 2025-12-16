@@ -1,0 +1,3134 @@
+import re
+from typing import Tuple  
+import string
+import logging
+from datetime import datetime
+from lxml import html
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+import markdownify
+from markdownify import MarkdownConverter
+import uvicorn
+from bs4 import BeautifulSoup, Comment,Tag
+import logging
+import os
+from logging.handlers import RotatingFileHandler
+# 用于测试--------------------------------------------------------------------------
+# def setup_logging():
+#     """设置日志配置 - 输出到带时间戳的日志文件 + 控制台"""
+#     # 生成时间戳文件名
+#     log_dir = "logs"
+#     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+#     log_file = os.path.join(log_dir, f"xpath_processing_{timestamp}.log")
+    
+#     # 创建日志目录
+#     os.makedirs(log_dir, exist_ok=True)
+    
+#     # Handler: 文件（可选轮转）+ 控制台
+#     file_handler = logging.FileHandler(log_file, encoding='utf-8')
+#     console_handler = logging.StreamHandler()
+    
+#     # 日志格式
+#     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+#     file_handler.setFormatter(formatter)
+#     console_handler.setFormatter(formatter)
+    
+#     # 配置 logger
+#     logging.basicConfig(
+#         level=logging.DEBUG,
+#         handlers=[file_handler, console_handler]
+#     )
+    
+#     return logging.getLogger(__name__)
+# 用于部署---------------------------------------------------------------------------
+def setup_logging():
+    log_level = logging.WARNING  
+    
+    logging.basicConfig(
+        level=log_level,
+        format='%(levelname)s - %(message)s',  
+        handlers=[
+            logging.StreamHandler()  
+        ]
+    )
+    
+    return logging.getLogger(__name__)
+
+
+# 
+logger = setup_logging()
+
+app = FastAPI(
+    title="HTML to Markdown Content Extractor",
+    description="Extract main content from HTML and convert to Markdown",
+    version="3.0.0"
+)
+class CustomMarkdownConverter(MarkdownConverter):
+   
+    def __init__(self,**options):
+
+        super().__init__(**options)
+
+    def convert_video(self,el,text,convert_as_inline=False,**kwargs):
+        src = el.get('src')
+        poster = el.get('poster')
+
+        if not src:
+            source_tag = el.find('source')
+            if source_tag:
+                src = source_tag.get('src')
+
+        if not src:
+            return ""
+        
+        html_output = f'<video src="{src}" controls="controls" width="100%"'
+
+        if poster:
+            html_output += f' poster="{poster}"'
+
+        html_output += '></video>'
+
+        return f'\n{html_output}\n'
+    
+    def convert_table(self, el, text, conversion_args=None,**kwargs):
+ 
+        el['width'] = '100%'
+        el['border'] = '1'
+        el['cellspacing'] = '0'
+        
+        if 'style' in el.attrs:
+            del el['style']
+        html_output = str(el)
+      
+        return f'\n{html_output}\n'
+    def convert_source(self,el,text,convert_as_inline=False,**kwargs):
+        return ""
+
+def delete_short_tags(soup: BeautifulSoup, tag_text: str) -> None:
+    
+    elements_to_delete = []
+
+    for element in soup.find_all(string=re.compile(re.escape(tag_text))):
+        if not hasattr(element, 'parent') or element.parent is None:
+            continue
+
+        parent = element.parent
+
+        #  
+        if not hasattr(parent, 'decompose'):
+            continue
+
+        # 
+        try:
+            parent_text = parent.get_text(strip=True)
+        except Exception:
+            continue  # 
+
+        # 
+        # 
+        if len(parent_text) < 50:
+            # 
+            if tag_text in parent_text:
+                # 
+                # 
+                if parent.name in ['span', 'div', 'a', 'button', 'p','dt','li','h4','font'] and not any(
+                    keyword in parent_text.lower()
+                    for keyword in ['文章', '内容', '正文', '详情', '更多信息']
+                ):
+                    elements_to_delete.append(parent)
+
+    # 
+    for parent in elements_to_delete:
+        try:
+            if parent and hasattr(parent, 'decompose'):
+                parent.decompose()
+        except Exception:
+            # 
+            pass
+
+def clean_table_html(table_html: str) -> str:
+   
+    try:
+        table_soup = BeautifulSoup(table_html, 'html.parser')
+
+        essential_attributes = {
+            'table': [],
+            'thead': [],
+            'tbody': [],
+            'tr': [],
+            'th': ['colspan', 'rowspan'],
+            'td': ['colspan', 'rowspan']
+        }
+
+        def clean_style_attribute(style_value: str) -> str:
+            if not style_value:
+                return ""
+
+            # 
+            semantic_keywords = ['font-weight', 'font-style', 'text-decoration']
+            # 
+            layout_keywords = ['margin', 'padding', 'text-align', 'text-indent',
+                             'width', 'height', 'float', 'position', 'display']
+
+            style_declarations = style_value.split(';')
+            kept_declarations = []
+
+            for declaration in style_declarations:
+                declaration = declaration.strip()
+                if not declaration:
+                    continue
+
+                has_semantic = any(keyword in declaration.lower() for keyword in semantic_keywords)
+                has_layout = any(keyword in declaration.lower() for keyword in layout_keywords)
+
+                if has_semantic and not has_layout:
+                    kept_declarations.append(declaration)
+
+            return '; '.join(kept_declarations)
+
+        def clean_tag(tag):
+            if tag.name is None:
+                return
+
+            allowed_attrs = essential_attributes.get(tag.name, [])
+
+            if tag.has_attr('style'):
+                cleaned_style = clean_style_attribute(tag['style'])
+                if cleaned_style.strip():
+                    tag['style'] = cleaned_style
+                    if 'style' not in allowed_attrs:
+                        allowed_attrs.append('style')
+                else:
+                    del tag['style']
+
+            attrs_to_remove = [attr for attr in tag.attrs if attr not in allowed_attrs]
+            for attr in attrs_to_remove:
+                del tag[attr]
+
+            for child in tag.find_all(recursive=False):
+                clean_tag(child)
+
+        clean_tag(table_soup)
+        return str(table_soup)
+
+    except Exception as e:
+        return table_html
+
+def remove_empty_tags(soup: BeautifulSoup) -> None:
+    
+    # 
+    tags_to_keep_empty = {'br', 'hr', 'img', 'input', 'embed', 'area', 'base', 'col', 'frame', 'link', 'meta', 'param', 'source', 'track', 'wbr'}
+
+    # 
+    changed = True
+    while changed:
+        changed = False
+        # 
+        for tag in soup.find_all(True):
+            if tag.name in tags_to_keep_empty:
+                continue
+
+            # 
+            has_content = False
+
+            # 
+            if tag.get_text(strip=True):
+                has_content = True
+
+            # 
+            if not has_content and tag.find_all():
+                for child in tag.find_all(True):
+                    if child.name in tags_to_keep_empty:
+                        has_content = True
+                        break
+
+            # 
+            if not has_content:
+                tag.decompose()
+                changed = True
+                break
+
+
+def clean_html_content_advanced(html_content: str) -> str:
+   
+    try:
+        soup = BeautifulSoup(html_content, 'html.parser')
+
+        # 
+        for tag in soup.find_all(['script', 'style', 'meta', 'link', 'noscript']):
+            tag.decompose()
+
+        # 
+        tags_to_delete = [
+            "已阅","字号", "打印", "关闭", "收藏","分享到微信","分享","字体","小","中","大","s92及gd格式的文件请用SEP阅读工具",
+            "扫一扫在手机打开当前页", "扫一扫在手机上查看当前页面","用微信“扫一扫”","分享给您的微信好友",
+            "相关链接",'下载文字版','下载图片版','扫一扫在手机打开当前页面',"微信扫一扫：分享","上一篇","下一篇","【打印文章】","返回顶部","你的浏览器不支持video",
+            "当前位置："
+        ]
+
+        for tag_text in tags_to_delete:
+            delete_short_tags(soup, tag_text)
+
+        error_elements_to_delete = []
+
+        for element in soup.find_all(string=re.compile("我要纠错")):
+            #  elment  
+            if not hasattr(element, 'parent') or element.parent is None:
+                continue
+
+            parent = element.parent
+
+            #  parent 
+            if not hasattr(parent, 'get_text') or not hasattr(parent, 'decompose'):
+                continue
+
+            try:
+                if parent and len(parent.get_text(strip=True)) < 20:  # 
+                    error_elements_to_delete.append(parent)
+            except Exception:
+                # 
+                continue
+
+        # 
+        for parent in error_elements_to_delete:
+            try:
+                if parent and hasattr(parent, 'decompose'):
+                    parent.decompose()
+            except Exception:
+                pass
+
+        # 保留属性列表
+        essential_attributes = {
+            'div': [], 'p': [], 'span': [],
+            'table': ['border', 'cellpadding', 'cellspacing'],
+            'tr': [], 'td': ['colspan', 'rowspan'], 'th': ['colspan', 'rowspan'],
+            'ul': [], 'ol': [], 'li': [],
+            'a': ['href', 'target'],
+            'img': ['src'],
+            'video': ['src', 'poster', 'controls'],
+            'source': ['src'],
+            'iframe': ['src'],
+            'br': [], 'hr': []
+        }
+
+        def clean_attributes(tag):
+            if tag.name is None:
+                return
+
+            allowed_attrs = essential_attributes.get(tag.name, [])
+
+            #   
+            if tag.has_attr('style'):
+                del tag['style']
+
+            attrs_to_remove = [attr for attr in tag.attrs if attr not in allowed_attrs]
+            for attr in attrs_to_remove:
+                del tag[attr]
+
+        for tag in soup.find_all(True):
+            clean_attributes(tag)
+
+        # 
+        for table in soup.find_all('table'):
+            cleaned_table = clean_table_html(str(table))
+            table.replace_with(BeautifulSoup(cleaned_table, 'html.parser'))
+
+        # 
+        remove_empty_tags(soup)
+
+        return str(soup)
+
+    except Exception as e:
+        return html_content
+
+
+def remove_invisible_tags(soup: BeautifulSoup):
+    for tag in soup(['script', 'style', 'noscript', 'iframe', 'svg', 'meta', 'link', 'input']):
+        tag.decompose()
+    for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
+        comment.extract()
+    for hidden in soup.find_all(attrs={"hidden": True}):
+        hidden.decompose()
+    style_pattern = re.compile(r'(display\s*:\s*none)|(visibility\s*:\s*hidden)', re.IGNORECASE)
+    for tag in soup.find_all(attrs={"style": True}):
+        if style_pattern.search(tag['style']):
+            tag.decompose()
+
+    hidden_classes = ['pchide', 'hide', 'invisible', 'd-none','hidden']
+    selector = ','.join(f'.{cls}' for cls in hidden_classes)
+    for tag in soup.select(selector):
+        tag.decompose()
+
+def remove_duplicate_metadata_elements(soup, table_element):
+    if not table_element:
+        return soup, 0
+
+    # 
+    table_text = clean_text(table_element.get_text())
+    if not table_text:
+        return soup, 0
+
+
+    # 
+    metadata_keywords = [
+        '发文机关', '发文字号', '发文日期', '成文日期', '发布日期', '主题分类',
+        '公文种类', '来源', '索引号', '标题', '文号', '签发人','发布机构','体裁分类','组配分类'
+    ]
+
+    # 
+    extracted_phrases = []
+
+    for keyword in metadata_keywords:
+        # 
+        keyword_pattern = f'{keyword}[^，。；；\n]*'
+        matches = re.findall(keyword_pattern, table_text)
+        for match in matches:
+            cleaned_match = clean_text(match)
+            if len(cleaned_match) > 5:  # 
+                extracted_phrases.append(cleaned_match)
+
+    if not extracted_phrases:
+        return soup, 0
+
+    removed_count = 0
+
+    # 
+    for phrase in extracted_phrases:
+
+        # 
+        matching_divs = []
+        all_uls = soup.find_all('ul')
+        all_tables = soup.find_all('tbody')
+
+        for div in all_uls:
+            # 
+            if div in table_element.parents:
+                continue
+
+            div_text = clean_text(div.get_text())
+            if phrase in div_text:
+                matching_divs.append(div)
+
+        for tbody in all_tables:
+            # 
+            if tbody == table_element or tbody in table_element.descendants:
+                continue
+
+            tbody_text = clean_text(tbody.get_text())
+            if phrase in tbody_text:
+                matching_divs.append(tbody)
+
+        for div in matching_divs:
+            div_text = clean_text(div.get_text())
+
+            keyword_count = sum(1 for kw in metadata_keywords if kw in div_text)
+            matched_phrases_count = sum(1 for p in extracted_phrases if p in div_text)
+
+            if keyword_count >= 2 or matched_phrases_count >= 2:
+
+                div.decompose()
+                removed_count += 1
+            else:
+                logger.debug(f"DEB留")
+
+    return soup, removed_count
+
+def clean_text(text: str) -> str:
+    if not text: return ""
+    return ''.join(text.split())
+
+def get_element_score(element) -> int:
+    
+    if not element or not isinstance(element, Tag):
+        return 0
+        
+    text = clean_text(element.get_text())
+    if not text: return 0
+    if len(text) > 700: return 0
+    meta_keywords = ['索引号', '主题分类', '发文字号', '发文机关','发文机构', '文号','组配分类','成文日期', '发布日期', '公文种类', '浏览次数', '来源：', '来源:']
+    if sum(1 for kw in meta_keywords if kw in text) >= 1:
+        if sum(1 for kw in meta_keywords if kw in text) >= 2 or element.name == 'table':
+            return 2
+        return 2
+
+    # 2.  /  / 
+    # 
+    if len(text) < 200:
+        ui_keywords = ['首页', '主页', '打印', '关闭', '收藏', '字号', '扫一扫', '分享', '当前位置','当前位置：', '位置：', '位置:']
+        if any(kw in text for kw in ui_keywords):
+            return 1
+        #  ">"
+        if '>' in element.get_text() and len(text) < 100:
+            return 1
+            
+    return 0
+
+def is_content_start(element) -> bool:
+    if not element: return False
+    text = clean_text(element.get_text())
+    
+    # 
+    if len(text) > 150 and get_element_score(element) == 0:
+        return True
+    
+    #   
+    if isinstance(element, Tag) and element.name == 'p' and len(text) > 50 and get_element_score(element) == 0:
+        return True
+        
+    return False
+
+def split_header_and_content_v2(html_content: str) -> Tuple[str, str]:
+    
+    if not html_content:
+        return '', ''
+    try:
+        soup = BeautifulSoup(html_content, 'html.parser')
+    except Exception as e:
+        return '', html_content
+
+    remove_invisible_tags(soup)
+
+    # 1. 
+    tables = soup.find_all('table')
+    table_element = None
+
+    for table in tables:
+        # 
+        if get_element_score(table) == 2:
+            table_element = table
+            # 
+            soup, metadata_removed_count = remove_duplicate_metadata_elements(soup, table_element)
+            break
+    divs = soup.find_all('div')
+    for div in divs:
+        if get_element_score(div) == 2:
+            table_element = div
+
+    uls = soup.find_all('ul')
+    for ul in uls:
+        if get_element_score(ul) == 2:
+            table_element = ul
+
+    if not table_element:
+        breadcrumbs = []
+        for element in soup.find_all(['div', 'nav', 'p', 'span']):
+            if get_element_score(element) == 1:
+                breadcrumbs.append(element)
+
+        if breadcrumbs:
+            # 
+            cutoff_element = breadcrumbs[0]
+        else:
+            return '', str(soup)
+    else:
+
+        found_breadcrumb_by_upward = False
+        current = table_element.parent
+
+        while current and current.name not in ['body', 'html', '[document]']:
+            # 
+            for child in current.children:
+                if isinstance(child, Tag) and child != table_element:
+                    if get_element_score(child) == 1:  # 
+                        found_breadcrumb_by_upward = True
+                        break
+            if found_breadcrumb_by_upward:
+                break
+            current = current.parent
+
+        # 3. 
+        if found_breadcrumb_by_upward:
+            #  →  → 
+            cutoff_element = table_element
+        else:
+
+            breadcrumb_patterns = [
+                r'[^>]*>[^>]*>[^>]*',  # > 
+                r'.*?首页.*?>.*',     # 
+                r'.*?当前位置.*',      # 
+                r'.*?位置[：:].*'      # 
+            ]
+
+            found_breadcrumb_by_regex = False
+            breadcrumb_element = None
+
+            soup_for_regex = BeautifulSoup(html_content, 'html.parser')
+            remove_invisible_tags(soup_for_regex)
+
+            for pattern in breadcrumb_patterns:
+                matches = soup_for_regex.find_all(string=re.compile(pattern))
+                if matches:
+                    for match in matches:
+                        parent = match.parent
+                        if parent and get_element_score(parent) == 1:
+                            breadcrumb_element = parent
+                            found_breadcrumb_by_regex = True
+                            break
+                    if found_breadcrumb_by_regex:
+                        break
+
+            if found_breadcrumb_by_regex:
+                cutoff_element = breadcrumb_element
+                logger.debug("DEBUG: 正则匹配到面包屑，以面包屑为分界点（面包屑在中间）")
+            else:
+                cutoff_element = table_element
+
+    if cutoff_element.name in ['tr', 'td', 'th']:
+        table = cutoff_structure.find_parent('table')
+        if table:
+            cutoff_element = table
+
+    try:
+        str(cutoff_element)
+    except Exception as e:
+        text_content = cutoff_element.get_text() if hasattr(cutoff_element, 'get_text') else ''
+        if text_content:
+            cutoff_element = BeautifulSoup(f'<div>{text_content}</div>', 'html.parser').div
+        else:
+            return '', html_content
+
+    all_header_elements = []
+
+    for table in soup.find_all('table'):
+        if get_element_score(table) == 2:
+            try:
+                str(table)
+                all_header_elements.append(table)
+            except:
+                logger.debug("DEBUG:素")
+
+    for element in soup.find_all(['div', 'nav', 'p', 'span']):
+        if get_element_score(element) == 1:
+            try:
+                str(element)
+                all_header_elements.append(element)
+            except:
+                logger.debug("DEB素")
+
+
+    # 
+    elements_to_extract = []
+
+
+    if cutoff_element.name == 'table' or cutoff_element.name == 'div' or get_element_score(cutoff_element) == 2:
+        elements_to_extract.append(cutoff_element)
+
+        for header_elem in all_header_elements:
+            if header_elem != cutoff_element and get_element_score(header_elem) == 1:
+                table_pos = html_content.find(str(cutoff_element))
+                breadcrumb_pos = html_content.find(str(header_elem))
+
+                if breadcrumb_pos < table_pos:
+                    elements_to_extract.append(header_elem)
+
+
+    elif get_element_score(cutoff_element) == 1:
+        elements_to_extract.append(cutoff_element)
+
+        for header_elem in all_header_elements:
+            if header_elem != cutoff_element:
+                breadcrumb_pos = html_content.find(str(cutoff_element))
+                elem_pos = html_content.find(str(header_elem))
+
+                if elem_pos < breadcrumb_pos:
+                    elements_to_extract.append(header_elem)
+
+    elements_to_extract = list({id(elem): elem for elem in elements_to_extract}.values())
+
+    elements_to_extract.sort(key=lambda x: html_content.find(str(x)))
+
+    header_parts = []
+    processed_ids = set()
+
+    for elem in elements_to_extract:
+        if id(elem) not in processed_ids:
+            
+            processed_ids.add(id(elem))
+            try:
+                elem_str = str(elem)
+                if elem_str and elem_str.strip():
+                    header_parts.append(elem_str)
+                elem.decompose()
+            except Exception as e:
+                try:
+                    text_content = elem.get_text() if hasattr(elem, 'get_text') else ''
+                    if text_content:
+                        header_parts.append(f'<div>{text_content}</div>')
+                    elem.decompose()
+                except:
+                    logger.debug(f"DE过")
+
+    header_html = '\n'.join(header_parts)
+    content_html = str(soup)
+
+ 
+    return header_html, content_html
+
+def clean_html_content_with_split(html_content: str) -> str:
+    
+
+    header_html, content_html = split_header_and_content_v2(html_content)
+    cleand_header_html = clean_html_content_advanced(header_html)
+    # 
+    cleaned_content_html = clean_html_content_advanced(content_html)
+
+    # 
+    content_md = html_to_markdown_simple(cleaned_content_html)
+
+    # 
+    content_soup = BeautifulSoup(cleaned_content_html, 'html.parser')
+    header_soup = BeautifulSoup(cleand_header_html,'html.parser')
+    content_text = clean_text(content_soup.get_text())
+    header_text = clean_text(header_soup.get_text())
+
+    return header_text, cleaned_content_html, content_md, content_text
+
+
+class HTMLInput(BaseModel):
+    html_content: str
+    url: str = ""  # 
+    
+class MarkdownOutput(BaseModel):
+    markdown_content: str
+    html_content: str  # 
+    xpath: str
+    status: str
+    process_time: float
+    header_content_text: str = ""  #  
+    cl_content_html: str = ""      # 
+    cl_content_md: str = ""        # 
+    cl_content_text: str = ""      # 
+    extract_success: bool = False     # 
+    # 
+
+# 
+def remove_header_footer_by_content_traceback(body):
+    
+    # 
+    header_content_keywords = [
+        '登录', '注册', '首页', '主页', '无障碍', '办事', '无障碍浏览','打印','收藏','机构概况','在线服务','互动交流',
+        '走进', '移动版', '手机版', '导航', '菜单', '搜索', '市政府',
+        'login', 'register', 'home', 'menu', 'search', 'nav'
+    ]
+    
+    # 
+    footer_content_keywords = [
+        '网站说明', '网站标识码', '版权所有', '主办单位', '承办单位', 
+        '技术支持', '联系我们', '网站地图', '隐私政策', '免责声明',
+        '备案号', 'icp', '公安备案', '政府网站', '网站管理',
+        'copyright', 'all rights reserved', 'powered by', 'designed by'
+    ]
+    
+    # 
+    header_elements = []
+    for keyword in header_content_keywords:
+        xpath = f"//*[contains(text(), '{keyword}')]"
+        elements = body.xpath(xpath)
+        header_elements.extend(elements)
+    
+    # 
+    footer_elements = []
+    for keyword in footer_content_keywords:
+        xpath = f"//*[contains(text(), '{keyword}')]"
+        elements = body.xpath(xpath)
+        footer_elements.extend(elements)
+    
+    # 
+    containers_to_remove = set()
+    
+    # 
+    for element in header_elements:
+        container = find_header_footer_container(element)
+        if container and container not in containers_to_remove:
+            containers_to_remove.add(container)
+    
+    # 
+    for element in footer_elements:
+        container = find_footer_container_by_traceback(element)
+        if container and container not in containers_to_remove:
+            containers_to_remove.add(container)
+    
+    # /
+    header_divs = body.xpath(".//div[.//header] | .//div[.//footer] | .//div[.//nav]")
+    for div in header_divs:
+        # /
+        div_text = div.text_content().lower()
+        
+        header_count = sum(1 for keyword in header_content_keywords if keyword in div_text)
+        footer_count = sum(1 for keyword in footer_content_keywords if keyword in div_text)
+        
+        if header_count >= 2 or footer_count >= 2:
+            if div not in containers_to_remove:
+                containers_to_remove.add(div)    
+    # 
+    removed_count = 0
+    for container in containers_to_remove:
+        try:
+            parent = container.getparent()
+            if parent is not None:
+                parent.remove(container)
+                removed_count += 1
+        except Exception as e:
+            logger.error(f"删除容器时出错: {e}")
+    
+    return body
+
+def find_header_footer_container(element):
+    current = element
+    
+    # 
+    while current is not None and current.tag != 'html':
+        # 
+        if current.tag in ['div', 'section', 'header', 'footer', 'nav', 'aside']:
+            # /
+            classes = current.get('class', '').lower()
+            elem_id = current.get('id', '').lower()
+            tag_name = current.tag.lower()
+            
+            # 
+            header_indicators = ['header', 'nav', 'navigation', 'menu', 'topbar', 'banner', 'menubar', 'head']
+            # 
+            footer_indicators = ['footer', 'foot', 'bottom', 'end', 'copyright', 'links', 'sitemap', 'contact']
+            
+            # 
+            for indicator in header_indicators + footer_indicators:
+                if (indicator in classes or indicator in elem_id or indicator in tag_name):
+                    return current
+        
+        # 
+        parent = current.getparent()
+        if parent is None or parent.tag in ['html', 'head', 'body', 'script', 'meta']:
+            # 
+            break
+        
+        # 
+        current = parent
+    
+    # 
+    # /
+    if (element.getparent() and 
+        element.getparent().tag == 'div' and 
+        element.getparent().getparent() and 
+        element.getparent().getparent().tag in ['body', 'html']):
+        
+        # /
+        div_element = element.getparent()
+        div_text = div_element.text_content().lower()
+        
+        # 
+        header_content_keywords = [
+            '登录', '注册', '首页', '主页', '无障碍',  '办事',  '无障碍浏览','打印','收藏','机构概况','在线服务','互动交流', 
+            '走进', '移动版', '手机版', '导航', '菜单', '搜索', '市政府','读屏专用','ALT+Shift'
+        ]
+        
+        footer_content_keywords = [
+            '网站说明', '网站标识码', '版权所有', '主办单位', '承办单位', 
+            '技术支持', '联系我们', '网站地图', '隐私政策', '免责声明',
+            '备案号', 'icp', '公安备案', '政府网站', '网站管理','退出服务','鼠标样式','阅读方式'
+        ]
+        
+        # 
+        header_count = sum(1 for keyword in header_content_keywords if keyword in div_text)
+        footer_count = sum(1 for keyword in footer_content_keywords if keyword in div_text)
+        
+        if header_count >= 2 or footer_count >= 2:
+            return div_element
+    
+    if element.getparent() and element.getparent().tag != 'html':
+        return element.getparent()
+    
+    return None
+def find_footer_container_by_traceback(element):
+    current = element
+    
+    while current is not None:
+        # 
+        if current.tag in ['div', 'section', 'footer']:
+            # 
+            classes = current.get('class', '').lower()
+            elem_id = current.get('id', '').lower()
+            
+            #
+            footer_indicators = ['footer', 'foot', 'bottom', 'end', 'copyright']
+            for indicator in footer_indicators:
+                if indicator in classes or indicator in elem_id:
+                    return current
+        
+        parent = current.getparent()
+        if parent is None or parent.tag in ['html', 'head', 'body', 'script', 'meta']:
+            break
+            
+        current = parent
+    
+    return None
+def preprocess_html_remove_interference(page_tree):
+    
+    # 
+    body_elements = page_tree.xpath("//body")
+    if body_elements:
+        body = body_elements[0]
+    else:
+        # 
+        body = page_tree
+    
+    if body is None:
+        return None
+    
+    
+    display_none_count = remove_display_none_elements(body)
+    
+    removed_count = remove_page_level_header_footer(body)
+    
+    
+    cleaned_html = html.tostring(body, encoding='unicode', pretty_print=True)
+    
+    return body
+
+def remove_display_none_elements(body):
+    
+    removed_count = 0
+
+    elements_to_remove = []
+
+    all_candidates = body.xpath(".//*[@style or contains(concat(' ', normalize-space(@class), ' '), ' ng-hide ')]")
+
+    for element in all_candidates:
+        style = element.get('style', '').lower()
+        classes = element.get('class', '')
+
+        if (style and 'display' in style and 'none' in style and
+            re.search(r'display\s*:\s*none', style, re.IGNORECASE)) or \
+           (' ng-hide ' in f" {classes} "):
+            elements_to_remove.append(element)
+    for element in elements_to_remove:
+        elem_id = element.get('id', '')
+        elem_class = element.get('class', '')
+        style = element.get('style', '').lower()
+        if style and 'display' in style and 'none' in style:
+            logger.info(f"  标记删除不可见元素(display:none): {element.tag} id='{elem_id[:30]}' class='{elem_class[:30]}'")
+        else:
+            logger.info("标hide")
+
+    for element in elements_to_remove:
+        try:
+            parent = element.getparent()
+            if parent is not None:
+                elem_id = element.get('id', '')
+                elem_class = element.get('class', '')
+                child_count = len(element.xpath(".//*"))
+                
+                parent.remove(element)
+                removed_count += 1
+                
+        except Exception as e:
+            logger.error(f"删出错: {e}")
+    
+    
+    return removed_count
+
+def remove_page_level_header_footer(body):
+    
+    
+    removed_count = 0
+    
+    semantic_tags = ["//header", "//footer", "//nav"]
+    for tag_xpath in semantic_tags:
+        elements = body.xpath(tag_xpath)
+        for element in elements:
+            try:
+                parent = element.getparent()
+                if parent is not None:
+                    parent.remove(element)
+                    removed_count += 1
+            except Exception as e:
+                logger.info(f"出错: {e}")
+    
+    top_divs = body.xpath("./div")  
+    
+    containers_to_remove = []
+    
+    for div in top_divs:
+        classes = div.get('class', '').lower()
+        elem_id = div.get('id', '').lower()
+        text_content = div.text_content().lower()
+        
+        is_header_footer = False
+        
+        strong_header_indicators = [
+            'header', 'top', 'navbar', 'navigation', 'menu-main', 
+            'site-header', 'page-header', 'banner', 'topbar'
+        ]
+        
+        strong_footer_indicators = [
+            'footer', 'bottom', 'site-footer', 'page-footer', 
+            'footerpc', 'wapfooter', 'g-bottom'
+        ]
+        
+        for indicator in strong_header_indicators + strong_footer_indicators:
+            if indicator in classes or indicator in elem_id:
+                is_header_footer = True
+                break
+        
+        if not is_header_footer:
+            header_words = [
+                '登录', '注册', '首页', '主页', '无障碍', '办事', 
+                '走进', '移动版', '手机版', '导航', '菜单', '搜索', '市政府',
+                'login', 'register', 'home', 'menu', 'search', 'nav'
+            ]
+            header_count = sum(1 for word in header_words if word in text_content)
+            
+            footer_words =  [
+                '网站说明', '网站标识码', '版权所有', '主办单位', '承办单位', 
+                '技术支持', '联系我们', '网站地图', '隐私政策', '免责声明',
+                '备案号', 'icp', '公安备案', '政府网站', '网站管理',
+                'copyright', 'all rights reserved', 'powered by', 'designed by'
+            ]
+            footer_count = sum(1 for word in footer_words if word in text_content)
+            
+            text_length = len(text_content.strip())
+            
+            if header_count >= 4 and text_length < 1000:
+                is_header_footer = True
+            elif footer_count >= 3 and text_length < 800:
+                is_header_footer = True
+        
+        if is_header_footer:
+            containers_to_remove.append(div)
+    
+    for container in containers_to_remove:
+        try:
+            parent = container.getparent()
+            if parent is not None:
+                parent.remove(container)
+                removed_count += 1
+        except Exception as e:
+            logger.error(f"删除错: {e}")
+    
+    return removed_count
+
+def calculate_text_density(element):
+    
+    text_content = element.text_content().strip()
+    text_length = len(text_content)
+    
+    if text_length == 0:
+        return 0
+    
+    # 
+    all_tags = element.xpath(".//*")
+    tag_count = len(all_tags)
+    
+    # 
+    links = element.xpath(".//a")
+    link_count = len(links)
+    
+    # 
+    images = element.xpath(".//img")
+    image_count = len(images)
+    
+    #  = 
+    # 
+    denominator = max(1, tag_count + link_count * 2 + image_count * 0.5)
+    density = text_length / denominator
+    
+    return density
+
+def remove_low_density_containers(body):
+
+    
+    # 
+    top_level_containers = body.xpath("./div | ./section | ./main | ./article | ./header | ./footer | ./nav | ./aside")
+    
+    containers_to_remove = []
+    
+    for container in top_level_containers:
+        density = calculate_text_density(container)
+        text_length = len(container.text_content().strip())
+        links = container.xpath(".//a")
+        
+        #  - 
+        classes = container.get('class', '').lower()
+        elem_id = container.get('id', '').lower()
+        
+        #  - 
+        important_indicators = [
+            'content', 'main', 'article', 'detail', 'news', 'info',
+            'bg-fff', 'bg-white', 'wrapper', 'body'  # 
+        ]
+        
+        has_important_content = any(indicator in classes or indicator in elem_id 
+                                  for indicator in important_indicators)
+        
+        # 
+        has_article_features = bool(
+            container.xpath(".//h1 | .//h2 | .//h3") or  # 
+            container.xpath(".//*[contains(text(), '发布时间') or contains(text(), '来源') or contains(text(), '浏览次数')]") or  # 文章元信息
+            len(container.xpath(".//p")) > 3  # 
+        )
+        
+        # 
+        if has_important_content or has_article_features:
+            continue
+        
+        # 
+        link_ratio = len(links) / max(1, len(container.xpath(".//*")))
+        
+        # 
+        is_low_quality = False
+        
+        # 
+        if density < 5 and link_ratio > 0.3:
+            is_low_quality = True
+        
+        # 
+        elif text_length < 200 and len(container.xpath(".//*")) > 20:
+            is_low_quality = True
+        
+        elif links and text_length < 500:  # 
+            link_text_length = sum(len(link.text_content()) for link in links)
+            if text_length > 0 and link_text_length / text_length > 0.8:  # 
+                is_low_quality = True
+        
+        if is_low_quality:
+            containers_to_remove.append(container)
+    
+    removed_count = 0
+    for container in containers_to_remove:
+        try:
+            parent = container.getparent()
+            if parent is not None:
+                parent.remove(container)
+                removed_count += 1
+        except Exception as e:
+            logger.error(f"删密出错: {e}")
+    
+    return body
+
+def remove_semantic_interference_tags(body):
+    
+    
+    # 
+    semantic_tags_to_remove = [
+        "//header", "//footer", "//nav", "//aside",
+        "//div[@role='navigation']", "//div[@role='banner']", "//div[@role='contentinfo']",
+        "//section[@role='navigation']"
+    ]
+    
+    removed_count = 0
+    for xpath in semantic_tags_to_remove:
+        elements = body.xpath(xpath)
+        for element in elements:
+            try:
+                parent = element.getparent()
+                if parent is not None:
+                    parent.remove(element)
+                    removed_count += 1
+            except Exception as e:
+                logger.info(f"删错: {e}")
+    
+    return body
+
+def remove_positional_interference(body):
+    
+    
+    direct_children = body.xpath("./div | ./section | ./main | ./article")
+    
+    if len(direct_children) <= 2:
+        return body
+    
+    containers_to_remove = []
+    
+    # 
+    first_container = direct_children[0] if direct_children else None
+    last_container = direct_children[-1] if len(direct_children) > 1 else None
+    
+    # 
+    if first_container is not None:
+        if is_positional_header(first_container):
+            containers_to_remove.append(first_container)
+    
+    # 
+    if last_container is not None and last_container != first_container:
+        if is_positional_footer(last_container):
+            containers_to_remove.append(last_container)
+    
+    # 
+    removed_count = 0
+    for container in containers_to_remove:
+        try:
+            parent = container.getparent()
+            if parent is not None:
+                parent.remove(container)
+                removed_count += 1
+        except Exception as e:
+            logger.error(f"删除位置容器时出错: {e}")
+    
+    return body
+
+def is_positional_header(container):
+    text_content = container.text_content().lower()
+    
+    header_indicators = [
+        '登录', '注册', '首页', '主页', '导航', '菜单', '搜索',
+        '政务服务', '办事服务', '互动交流', '走进', '无障碍',
+        'login', 'register', 'home', 'menu', 'search', 'nav'
+    ]
+    
+    header_count = sum(1 for word in header_indicators if word in text_content)
+    
+    density = calculate_text_density(container)
+    
+    return header_count >= 3 or (density < 8 and header_count >= 2)
+
+def is_positional_footer(container):
+    text_content = container.text_content().lower()
+    
+    footer_indicators = [
+        '版权所有', '主办单位', '承办单位', '技术支持', '联系我们',
+        '网站地图', '隐私政策', '免责声明', '备案号', 'icp',
+        '网站标识码', '政府网站', '网站管理',
+        'copyright', 'all rights reserved', 'powered by'
+    ]
+    
+    footer_count = sum(1 for word in footer_indicators if word in text_content)
+    
+    density = calculate_text_density(container)
+    
+    return footer_count >= 2 or (density < 6 and footer_count >= 1)
+
+def is_interference_container(container):
+   
+    classes = container.get('class', '').lower()
+    elem_id = container.get('id', '').lower()
+    tag_name = container.tag.lower()
+    text_content = container.text_content().lower()
+    
+    if tag_name in ['header', 'footer', 'nav', 'aside']:
+        return True
+    
+    strong_interference_keywords = [
+        'header', 'footer', 'nav', 'navigation', 'menu', 'menubar', 
+        'topbar', 'bottom', 'sidebar', 'aside', 'banner', 'breadcrumb'
+    ]
+    
+    for keyword in strong_interference_keywords:
+        if keyword in classes or keyword in elem_id:
+            return True
+    
+    density = calculate_text_density(container)
+    text_length = len(text_content.strip())
+    
+    if density < 3 and text_length < 300:
+        return True
+    
+    links = container.xpath(".//a")
+    if len(links) > 5:
+        link_text_length = sum(len(link.text_content()) for link in links)
+        if text_length > 0:
+            link_ratio = link_text_length / text_length
+            if link_ratio > 0.7:
+                return True
+    
+    header_content_patterns = [
+        '登录', '注册', '首页', '主页', '无障碍', '政务服务', '办事服务',
+        '互动交流', '走进', '移动版', '手机版', '导航', '菜单', '搜索',
+        'login', 'register', 'home', 'menu', 'search', 'nav'
+    ]
+    
+    footer_content_patterns = [
+        '网站说明', '网站标识码', '版权所有', '主办单位', '承办单位',
+        '技术支持', '联系我们', '网站地图', '隐私政策', '免责声明',
+        '备案号', 'icp', '公安备案', '政府网站', '网站管理',
+        'copyright', 'all rights reserved', 'powered by'
+    ]
+    
+    # 
+    header_matches = sum(1 for pattern in header_content_patterns if pattern in text_content)
+    footer_matches = sum(1 for pattern in footer_content_patterns if pattern in text_content)
+    
+    # 
+    if header_matches >= 2:  # 
+        return True
+    
+    if footer_matches >= 2:  # 
+        return True
+    
+    # 6. 
+    # 
+    if text_length < 200 and (header_matches + footer_matches) >= 2:
+        return True
+    
+    # 7. 
+    ad_keywords = ['advertisement', 'ads', 'social', 'share', 'follow', 'subscribe']
+    ad_matches = sum(1 for keyword in ad_keywords if keyword in text_content or keyword in classes)
+    if ad_matches >= 2:
+        return True
+    
+    return False
+
+def find_article_container(page_tree):
+    
+    cleaned_body = preprocess_html_remove_interference(page_tree)
+
+    if cleaned_body is None:
+        return None, None
+
+    original_body = page_tree.xpath("//body")
+    original_body = original_body[0] if original_body else None
+
+    main_content = find_main_content_in_cleaned_html(cleaned_body, original_body)
+    
+    return main_content, cleaned_body
+
+def extract_content_to_markdown(html_content: str):
+    
+    result = {
+        'markdown_content': '',
+        'html_content': '',
+        'xpath': '',
+        'status': 'failed'
+    }
+
+    try:
+        # 
+        if not html_content or not isinstance(html_content, str):
+            return result
+
+        # 
+        tree = html.fromstring(html_content)
+
+        main_container, cleaned_body = find_article_container(tree)
+
+        if main_container is None or cleaned_body is None:
+            return result
+
+
+        #  - 
+        try:
+            xpath = generate_xpath(main_container)
+            if not xpath:
+                xpath = ""
+        except Exception as e:
+            xpath = ""
+
+        try:
+            container_html = html.tostring(main_container, encoding='unicode', pretty_print=True)
+            if not container_html:
+                container_html = html_content
+        except Exception as e:
+            container_html = html_content
+
+        try:
+            cleaned_container_html = clean_container_html(container_html)
+            if not cleaned_container_html:
+                cleaned_container_html = container_html
+        except Exception as e:
+            cleaned_container_html = container_html
+
+        try:
+            markdown_content = markdownify.markdownify(
+                cleaned_container_html,
+                heading_style="ATX",  #  # 
+                bullets="-",  #  - 
+                strip=['script', 'style']  # 
+            )
+
+            
+            if markdown_content:
+                markdown_content = clean_markdown_content(markdown_content)
+            else:
+                markdown_content = ""
+
+        except Exception as e:
+            markdown_content = ""
+
+        result.update({
+            'markdown_content': markdown_content,
+            'html_content': cleaned_container_html,
+            'xpath': xpath,
+            'status': 'success'
+        })
+
+       
+        return result
+
+    except Exception as e:
+        import traceback
+        error_msg = str(e) if str(e) else repr(e)
+        
+        return result
+def remove_pua_chars(text:str)->str:
+    
+    if not text:
+        return text
+
+    # 
+    def is_pua(char):
+        code = ord(char)
+        return (
+            0xE000 <= code <= 0xF8FF or
+            0xF0000 <= code <= 0xFFFFD or
+            0x100000 <= code <= 0x10FFFD
+        )
+
+    return ''.join(c for c in text if not is_pua(c))
+
+def clean_container_html(container_html: str) -> str:
+
+
+    if not container_html or not isinstance(container_html, str):
+        return container_html or ""
+
+    try:
+        # 
+        soup = BeautifulSoup(container_html, 'html.parser')
+        
+        # 
+        for script in soup.find_all('script'):
+            if script:  # 
+                script.decompose()
+        
+        # 
+        for style in soup.find_all('style'):
+            if style:  # 
+                style.decompose()
+
+        # 
+        for img in soup.find_all('img'):
+            if img:
+                # 
+                src = img.get('src', '')
+                if 'base64' in src.lower():
+                    img.decompose()
+
+        # 1. 
+        styled_elements = soup.find_all(attrs={"style": True})
+        
+        display_none_elements = []
+        for i, element in enumerate(styled_elements):
+            style = element.get('style', '')
+            if 'display' in style.lower() and 'none' in style.lower():
+                display_none_elements.append(element)
+                        
+        # 
+        for element in display_none_elements:
+            try:
+                element.decompose()
+            except Exception as e:
+                pass
+        result = str(soup)
+        
+        # :
+        if 'display:none' in result.lower():
+            # 
+            remaining = re.findall(r'<[^>]*display\s*:\s*none[^>]*>', result, re.IGNORECASE)
+
+        # 
+        all_tags = soup.find_all()
+        for tag in all_tags:
+            if tag is None or not hasattr(tag, 'attrs'):
+                continue
+                
+            attrs_to_remove = []
+            # 
+            for attr_name in list(tag.attrs.keys()):  # 
+                if attr_name.startswith('on'):  # , 
+                    attrs_to_remove.append(attr_name)
+                elif (attr_name == 'href' and 
+                      tag.get(attr_name) and 
+                      str(tag[attr_name]).startswith('javascript:')):
+                    attrs_to_remove.append(attr_name)
+            
+            for attr in attrs_to_remove:
+                try:
+                    del tag[attr]
+                except (AttributeError, KeyError):
+                    pass   
+        cleaned_html = str(soup)
+        cleaned_html = remove_pua_chars(cleaned_html)
+        return cleaned_html
+        
+    except Exception as e:
+        return container_html
+def clean_markdown_content(markdown_content: str) -> str:
+   
+    # 
+    markdown_content = re.sub(r'\n\s*\n\s*\n', '\n\n', markdown_content)
+    
+    # 
+    lines = [line.strip() for line in markdown_content.split('\n')]
+    
+    # 
+    cleaned_lines = []
+    prev_empty = False
+    
+    for line in lines:
+        if line.strip():
+            cleaned_lines.append(line)
+            prev_empty = False
+        elif not prev_empty:
+            cleaned_lines.append('')
+            prev_empty = True
+    
+    # 
+    while cleaned_lines and not cleaned_lines[0]:
+        cleaned_lines.pop(0)
+    while cleaned_lines and not cleaned_lines[-1]:
+        cleaned_lines.pop()
+    
+    return '\n'.join(cleaned_lines)
+
+def find_main_content_in_cleaned_html(cleaned_body, original_body=None):
+    
+    if cleaned_body is None:
+        return None
+    
+    
+    content_containers = cleaned_body.xpath(".//div | .//section | .//article | .//main")
+    
+    if not content_containers:
+        return cleaned_body
+    
+    scored_containers = []
+    containers_to_remove = []
+    
+    for container in content_containers:
+        if container is None:
+            continue
+            
+        score = calculate_content_container_score(container)
+        
+        classes = container.get('class', '').lower()
+        elem_id = container.get('id', '').lower()
+        
+        
+        is_protected = (
+            'logger.debugcontent' in elem_id.lower() or  # .
+            container.xpath(".//*[@id='logger.debugContent' or @id='logger.debugcontent']") or  #  
+            'bg-fff' in classes or  # 
+            'container' in classes and len(container.xpath(".//*")) > 20  # 
+        )
+        
+        if is_protected:
+            scored_containers.append((container, max(score, 50)))  
+        elif score < -100:
+            containers_to_remove.append(container)
+        elif score > -50:  # 
+            scored_containers.append((container, score))
+    
+    
+    if not scored_containers:
+        return content_containers[0]
+    
+    scored_containers.sort(key=lambda x: x[1], reverse=True)
+
+    
+    top_5 = scored_containers[:5]
+    for idx, (container, score) in enumerate(top_5, 1):
+        classes = container.get('class', '')
+        elem_id = container.get('id', '')
+        text_length = len(container.text_content().strip())
+        child_count = len(container.xpath(".//*"))
+        
+    
+    best_score = scored_containers[0][1]
+    
+  
+    
+    top_5_containers = scored_containers[:5]
+    long_content_containers = []
+    
+    for container, score in top_5_containers:
+        text_length = len(get_clean_text_content_lxml(container).strip())
+        classes = container.get('class', '')
+        elem_id = container.get('id', '')
+        
+        if text_length > 1000:  # 
+            long_content_containers.append((container, score, text_length))
+
+    
+    if len(long_content_containers) >= 2:
+        # 
+        scores = [score for _, score, _ in long_content_containers]
+        max_score = max(scores)
+        min_score = min(scores)
+        score_diff = max_score - min_score
+        
+        
+        if score_diff <= 200:  
+            
+            long_content_containers.sort(key=lambda x: len(x[0].xpath(".//*")))
+            
+            selected_precise_container = None
+            selected_text_length = 0  # 
+            for container, score, text_length in long_content_containers:
+                child_count = len(container.xpath(".//*"))
+                classes = container.get('class', '')
+                elem_id = container.get('id', '')
+                
+            
+                if child_count >= 10 or text_length > 3000:
+                    selected_precise_container = container
+                    selected_text_length = text_length  # 
+                    break
+            
+            if selected_precise_container is not None:
+                # 向上遍历找到有意义的父容器
+                def find_meaningful_parent(element):
+                  
+                    current = element.getparent()
+                    depth = 0
+                    max_depth = 5  # 
+                    
+                    meaningful_tags = ['div','section', 'article', 'main']
+                    
+                    while current is not None and depth < max_depth:
+                        tag = current.tag.lower()
+                        classes = current.get('class', '').strip()
+                        elem_id = current.get('id', '').strip()
+                                                
+                        if tag == 'body':
+                            break
+                        
+                        is_meaningful_tag = tag in meaningful_tags
+                        has_identifier = bool(classes or elem_id)
+                        
+                        if is_meaningful_tag and has_identifier:
+                            logger.info(f"      ✅ : {tag}")
+                            return current, depth + 1
+                        elif not is_meaningful_tag:
+                            logger.info(f"      ⏭ {tag}")
+                        elif not has_identifier:
+                            logger.info(f"      ⏭ ")
+                        
+                        current = current.getparent()
+                        depth += 1
+                    
+                    return None, 0
+                
+                parent_container, parent_depth = find_meaningful_parent(selected_precise_container)
+                
+                if parent_container is not None:
+                    parent_classes = parent_container.get('class', '')
+                    parent_id = parent_container.get('id', '')
+                    parent_text_length = len(parent_container.text_content().strip())
+                    parent_child_count = len(parent_container.xpath(".//*"))
+
+               
+                    if parent_container.tag.lower() == 'body':
+                        best_container = selected_precise_container
+                    else:
+                        parent_combined = f"{parent_classes} {parent_id}".lower()
+                        has_interference = any(keyword in parent_combined for keyword in
+                                             ['header', 'footer', 'nav', 'menu', 'sidebar'])
+
+                        if not has_interference and parent_text_length > selected_text_length * 0.8:
+                            best_container = parent_container
+                        else:
+                            best_container = selected_precise_container
+                            if has_interference:
+                                logger.info(f"   ⚠ 父容器包含干扰特征，保持精确容器")
+                            else:
+                                logger.info(f"   ⚠ 父容器包含干扰特征，保持精确容器")
+                else:
+                    best_container = selected_precise_container
+            else:
+                best_container = scored_containers[0][0]
+        else:
+            best_container = scored_containers[0][0]
+    else:
+        
+        score_threshold = 20
+        similar_score_containers = [(container, score) for container, score in scored_containers 
+                                   if abs(score - best_score) <= score_threshold]
+        
+        
+        if len(similar_score_containers) > 1:
+            best_container = select_best_container_prefer_child(
+                [c for c, s in similar_score_containers], 
+                scored_containers
+            )
+        else:
+            best_container = scored_containers[0][0]
+    
+    def has_interference_keywords(container):
+        classes = container.get('class', '').lower()
+        elem_id = container.get('id', '').lower()
+        combined = f"{classes} {elem_id}"
+        
+        interference_keywords = ['header', 'footer', 'nav', 'navigation', 'menu', 'sidebar']
+        
+        for keyword in interference_keywords:
+            if keyword in combined:
+                return True, keyword
+        return False, None
+    
+    has_interference, keyword = has_interference_keywords(best_container)
+    
+    if has_interference:
+        
+        for container, score in scored_containers:
+            has_interference_check, _ = has_interference_keywords(container)
+            if not has_interference_check and score > 0:
+                best_container = container
+                break
+        else:
+            logger.info(f"   ⚠️")
+    
+    try:
+        final_score = next(score for container, score in scored_containers if container == best_container)
+        recalculated = False
+    except StopIteration:
+        final_score = calculate_content_container_score(best_container)
+        recalculated = True
+
+        if scored_containers and final_score == scored_containers[0][1]:
+            text_content = best_container.text_content().strip()
+            text_length = len(text_content)
+            have_muchLinks = False
+
+            if text_length > 0:
+                links = best_container.xpath(".//a")
+                link_count = len(links)
+                if link_count >= 5:
+                    have_muchLinks = True
+
+            if have_muchLinks:
+                best_container = scored_containers[0][0]
+                final_score = scored_containers[0][1]
+                recalculated = False
+    
+    final_text_length = len(best_container.text_content().strip())
+    final_child_count = len(best_container.xpath(".//*"))
+    
+
+    return best_container
+def is_child_of(child_element, parent_element):
+    current = child_element.getparent()
+    while current is not None:
+        if current == parent_element:
+            return True
+        current = current.getparent()
+    return False
+
+def select_best_container_prefer_child(similar_containers, all_scored_containers):
+    
+    parent_child_pairs = []
+    
+    for i, container1 in enumerate(similar_containers):
+        for j, container2 in enumerate(similar_containers):
+            if i != j:
+                if is_child_of(container2, container1):
+                    score1 = next(score for c, score in all_scored_containers if c == container1)
+                    score2 = next(score for c, score in all_scored_containers if c == container2)
+                    parent_child_pairs.append((container1, container2, score1, score2))
+    
+    if parent_child_pairs:
+        valid_children = []
+        for parent, child, parent_score, child_score in parent_child_pairs:
+            score_diff = parent_score - child_score
+            if score_diff <= 20 and child_score >= 150:  
+                valid_children.append((child, child_score, score_diff))
+        
+        if valid_children:
+            valid_children.sort(key=lambda x: (-x[1], x[2]))  
+            
+            best_child, best_score, score_diff = valid_children[0]
+            
+            child_text_length = len(best_child.text_content().strip())
+            parent_candidates = [parent for parent, child, p_score, c_score in parent_child_pairs 
+                               if child == best_child]
+            
+            if parent_candidates:
+                parent = parent_candidates[0]
+                parent_text_length = len(parent.text_content().strip())
+                
+                if child_text_length < parent_text_length * 0.6:
+                    return parent
+            
+            return best_child
+    
+    return select_deepest_container_from_similar(similar_containers)
+def select_deepest_container_from_similar(similar_containers):
+    if not similar_containers:
+        return None
+    
+    if len(similar_containers) == 1:
+        return similar_containers[0]
+    
+    container_depths = []
+    for container in similar_containers:
+        depth = calculate_container_depth(container)
+        container_depths.append((container, depth))
+    
+    container_depths.sort(key=lambda x: x[1], reverse=True)
+    
+    deepest_container = container_depths[0][0]
+    deepest_depth = container_depths[0][1]
+    
+    return deepest_container
+
+def calculate_container_depth(container):
+    depth = 0
+    current = container
+    
+    while current is not None and current.tag not in ['body', 'html']:
+        depth += 1
+        current = current.getparent()
+        if current is None:
+            break
+    
+    return depth
+def select_best_from_same_score_containers(containers):
+    container_depths = []
+    
+    for container in containers:
+        depth = calculate_container_depth(container)
+        container_depths.append((container, depth))
+        
+    
+    container_depths.sort(key=lambda x: x[1], reverse=True)
+    
+    best_container = container_depths[0][0]
+    best_depth = container_depths[0][1]
+    
+    
+    return best_container
+
+def calculate_container_depth(container):
+    depth = 0
+    current = container
+    
+    while current is not None and current.tag not in ['body', 'html']:
+        depth += 1
+        current = current.getparent()
+        if current is None:
+            break
+    
+    return depth
+def get_clean_text_content_lxml(container):
+    if container is None:
+        return ""
+
+    container_copy = container.__copy__()
+
+    for elem in container_copy.xpath('//script | //style'):
+        elem.getparent().remove(elem)
+
+    clean_text = container_copy.text_content()
+    return clean_text
+
+def calculate_content_container_score(container):
+    if container is None:
+        return -1000
+
+    score = 0
+    debug_info = []
+
+    classes = container.get('class', '').lower()
+    elem_id = container.get('id', '').lower()
+
+    text_content = get_clean_text_content_lxml(container)
+    text_content_lower = text_content.lower()  # 
+    text_length = len(text_content.strip())
+
+
+    style = container.get('style', '').lower()
+    if 'display' in style and 'none' in style:
+        score -= 1000  # 
+    
+        return score
+    
+    #  :
+    current = container.getparent()
+    depth = 0
+    while current is not None and depth < 3:  # 
+        parent_style = current.get('style', '').lower()
+        if 'display' in parent_style and 'none' in parent_style:
+            score -= 800  # 
+            
+            return score
+        current = current.getparent()
+        depth += 1
+
+ 
+    if container.tag.lower() in ['header', 'footer', 'nav', 'aside']:
+        score -= 500  #
+        
+        return score  # 
+
+    strong_interference_keywords = [
+        'header', 'footer', 'nav', 'navigation', 'menu', 'menubar', 
+        'topbar', 'bottom', 'sidebar', 'aside', 'banner', 'ad', 'advertisement'
+    ]
+
+    def create_pattern(keyword):
+        return re.compile(r'(^|[^\w-])' + re.escape(keyword) + r'([^\w-]|$)', re.IGNORECASE)
+
+    interference_patterns = {kw: create_pattern(kw) for kw in strong_interference_keywords}
+
+    interference_count = 0
+    found_interference_keywords = []
+
+    combined_text = f"{classes} {elem_id}".strip().lower()
+
+    for keyword, pattern in interference_patterns.items():
+        if pattern.search(combined_text):
+            interference_count += 1
+            found_interference_keywords.append(keyword)
+
+    if interference_count > 0:
+        interference_penalty = interference_count * 200
+        score -= interference_penalty
+        
+        if interference_count >= 2:
+            return score
+    
+    positive_content_keywords = [
+        'content', 'article', 'main', 'body', 'text', 'detail', 
+        'info', 'news', 'post', 'entry'
+    ]
+    
+    positive_count = 0
+    found_positive_keywords = []
+    
+    for keyword in positive_content_keywords:
+        pattern = create_pattern(keyword)
+        if pattern.search(combined_text):
+            positive_count += 1
+            found_positive_keywords.append(keyword)
+    
+    if positive_count > 0:
+        positive_bonus = min(positive_count * 30, 90)
+        score += positive_bonus
+
+    header_content_keywords = [
+        '登录', '注册', '首页', '主页', '无障碍',  '办事',   '无障碍浏览','打印','收藏','机构概况','在线服务','互动交流',
+        '走进', '移动版', '手机版', '导航', '菜单', '搜索', '市政府',
+        'login', 'register', 'home', 'menu', 'search', 'nav'
+    ]
+    
+    footer_content_keywords = [
+        '网站说明', '网站标识码', '版权所有', '主办单位', '承办单位', 
+        '技术支持', '联系我们', '网站地图', '隐私政策', '免责声明',
+        '备案号', 'icp', '公安备案', '政府网站', '网站管理','关闭窗口','打印文章','返回顶部',
+        'copyright', 'all rights reserved', 'powered by', 'designed by','十字线','鼠标样式','读屏专用','ALT+Shift'
+    ]
+    
+    found_header_keywords = [keyword for keyword in header_content_keywords if keyword in text_content_lower and not (('当前位置' in text_content_lower) or ('当前的位置' in  text_content_lower))]
+    found_footer_keywords = [keyword for keyword in footer_content_keywords if keyword in text_content_lower]
+    
+    header_content_count = len(found_header_keywords)
+    footer_content_count = len(found_footer_keywords)
+    have_muchLinks = False
+    links = container.xpath(".//a[@href]")
+    
+    if links and text_length > 0:
+        link_count = len(links)
+        link_text_total = sum(len(link.text_content().strip()) for link in links)
+        
+        links_per_100_chars = (link_count / text_length) * 10000
+        link_text_ratio = link_text_total / text_length
+        
+        logger.info(f"🔗 链接分析: {link_count}个链接, 密度={links_per_100_chars:.2f}个/5000字符, 占比={link_text_ratio:.1%}")        
+
+        if link_count > 15:
+            score -= 200
+        elif link_count > 5 :
+            if links_per_100_chars > 5:
+                score -= 120
+            elif links_per_100_chars > 3:
+                score -= 50
+         
+        if link_count >= 5:
+            have_muchLinks = True
+
+    
+    
+    is_long_content = text_length > 3000
+    
+    if is_long_content:
+        logger.info(f"✓ ")
+    
+    if header_content_count >= 5:
+        if is_long_content:
+            score -= 100
+        else:
+            score -= 300
+    elif header_content_count >= 3:
+        if is_long_content:
+            score -= 1
+        else:
+            score -= 300
+    elif header_content_count >= 2:
+        if is_long_content:
+            score -= 1
+        else:
+            score -= 150
+    
+    if footer_content_count >= 3:
+        if is_long_content:
+            
+            score -= 100
+        else:
+            score -= 300
+    elif footer_content_count >= 2:
+        if is_long_content:
+             
+            score -= 50
+        else:
+            score -= 150
+    
+    
+    if score < -200 and not is_long_content:
+        return score
+    elif score < -200 and is_long_content:
+        logger.info(f"⚠ ")
+    
+    
+    
+    if text_length > 5000 and not have_muchLinks:
+        score+=200
+        
+    elif text_length > 1000:
+        score += 50
+        
+    elif text_length > 500:
+        score += 35
+        
+    elif text_length > 200:
+        score += 20
+        
+    elif text_length < 50:
+        score -= 20
+        
+    
+ 
+    role = container.get('role', '').lower()
+    if role == 'viewlist':
+        score += 150
+       
+    elif role in ['list', 'listbox', 'grid', 'main', 'article']:
+        score += 50
+        
+    content_indicators = [
+        # 
+        (r'\d{4}-\d{2}-\d{2}|\d{4}年\d{1,2}月\d{1,2}日|\d{4}/\d{1,2}/\d{1,2}|发布时间|更新日期|发布日期|成文日期', 30, '时间特征'),
+        # 
+        (r'通知|公告|意见|办法|规定|措施|方案|决定|指导|实施', 40, '公文特征'),
+        # 
+        (r'第[一二三四五六七八九十\d]+条|第[一二三四五六七八九十\d]+章|第[一二三四五六七八九十\d]+节', 35, '条款特征'),
+        # 
+        (r'索引号|主题分类|发文机关|发文字号|有效性', 25, '政务信息'),
+        # 
+        (r'附件|下载|pdf|doc|docx|文件下载', 20, '附件特征'),
+        # 
+        (r'为了|根据|按照|依据|现将|特制定|现印发|请结合实际', 30, '内容结构'),
+        # 
+        (r'记者|报道|消息|新闻|采访|发表|刊登', 25, '新闻特征'),
+        # 
+        (r'正文|内容|详情|全文|摘要|概述', 20, '正文特征')
+    ]
+    
+    total_content_score = 0
+    matched_features = []
+    
+    for pattern, weight, feature_name in content_indicators:
+        matches = re.findall(pattern, text_content_lower)  # 
+        if matches:
+            total_content_score += weight
+            matched_features.append(f"{feature_name}({len(matches)})")
+    
+    if total_content_score > 0:
+        final_content_score = min(total_content_score, 120)
+        score += final_content_score
+    else:
+        logger.info(f"   ❌ ")
+    
+    # 8. .
+    
+    # 9.  - 
+    structured_elements = container.xpath(".//p | .//h1 | .//h2 | .//h3 | .//h4 | .//h5 | .//h6 | .//li | .//table | .//div[contains(@class,'content')] | .//section")
+    if len(structured_elements) > 5:
+        structure_score = min(len(structured_elements) * 2, 40)
+        score += structure_score
+    
+    # 10. 
+    images = container.xpath(".//img")
+    if len(images) > 0:
+        image_score = min(len(images) * 3, 150)
+        score += image_score
+    
+    # 
+    container_info = f"{container.tag} class='{classes[:30]}'"
+    for info in debug_info:
+        logger.info(f"  {info}")
+    
+    return score
+
+def exclude_page_header_footer(body):
+    children = body.xpath("./div | ./main | ./section | ./article")
+    
+    if not children:
+        return body
+    
+    valid_children = []
+    for child in children:
+        if not is_page_level_header_footer(child):
+            valid_children.append(child)
+    
+    return find_middle_content(valid_children)
+
+def is_page_level_header_footer(element):
+    classes = element.get('class', '').lower()
+    elem_id = element.get('id', '').lower()
+    tag_name = element.tag.lower()
+    
+    # 
+    if tag_name in ['header', 'footer', 'nav']:
+        return True
+    
+    # 
+    is_footer, _ = is_in_footer_area(element)
+    if is_footer:
+        return True
+    
+    # /
+    page_keywords = ['header', 'footer', 'nav', 'menu', 'topbar', 'bottom', 'top']
+    for keyword in page_keywords:
+        if keyword in classes or keyword in elem_id:
+            return True
+    
+    # 
+    role = element.get('role', '').lower()
+    if role in ['banner', 'navigation', 'contentinfo']:
+        return True
+    
+    return False
+
+def find_middle_content(valid_children):
+    if not valid_children:
+        return None
+    
+    if len(valid_children) == 1:
+        return valid_children[0]
+    
+    # 
+    scored_containers = []
+    for container in valid_children:
+        score = calculate_content_richness(container)
+        scored_containers.append((container, score))
+    
+    # 
+    scored_containers.sort(key=lambda x: x[1], reverse=True)
+    best_container = scored_containers[0][0]
+    
+    logger.info(f"页面主体容器得分: {scored_containers[0][1]}")
+    return best_container
+
+def calculate_content_richness(container):
+    score = 0
+
+    text_content = get_clean_text_content_lxml(container).strip()
+    content_length = len(text_content)
+    
+    if content_length > 1000:
+        score += 40
+    elif content_length > 500:
+        score += 30
+    elif content_length > 200:
+        score += 20
+    elif content_length > 100:
+        score += 10
+    else:
+        return -5
+    
+    images = container.xpath(".//img")
+    if len(images) > 0:
+        score += min(len(images) * 3, 20)
+    
+    
+    structured_elements = container.xpath(".//p | .//div[contains(@style, 'text-align')] | .//h1 | .//h2 | .//h3")
+    if len(structured_elements) > 0:
+        score += min(len(structured_elements) * 2, 25)
+    
+    return score
+
+def exclude_local_header_footer(container):
+    children = container.xpath("./div | ./section | ./article")
+    
+    if not children:
+        return container
+    
+    valid_children = []
+    for child in children:
+        if not is_local_header_footer(child):
+            valid_children.append(child)
+    
+    if not valid_children:
+        return container
+    
+    return select_content_container(valid_children)
+
+def is_local_header_footer(element):
+    classes = element.get('class', '').lower()
+    elem_id = element.get('id', '').lower()
+    
+    local_keywords = ['title', 'tit', 'head', 'foot', 'top', 'bottom', 'nav', 'menu']
+    for keyword in local_keywords:
+        if keyword in classes or keyword in elem_id:
+            text_content = element.text_content().strip()
+            if len(text_content) < 200:  
+                return True
+    
+    return False
+
+def select_content_container(valid_children):
+    if len(valid_children) == 1:
+        return valid_children[0]
+    
+    # 
+    scored_containers = []
+    for container in valid_children:
+        score = calculate_final_score(container)
+        scored_containers.append((container, score))
+    
+    # 
+    scored_containers.sort(key=lambda x: x[1], reverse=True)
+    best_container = scored_containers[0][0]
+    
+    return best_container
+
+def calculate_final_score(container):
+    score = 0
+
+    text_content = get_clean_text_content_lxml(container).strip()
+    content_length = len(text_content)
+    
+    if content_length > 500:
+        score += 30
+    elif content_length > 200:
+        score += 20
+    elif content_length > 100:
+        score += 15
+    else:
+        score += 5
+    
+    # 
+    images = container.xpath(".//img")
+    if len(images) > 0:
+        score += min(len(images) * 4, 25)
+    
+    # 
+    styled_divs = container.xpath(".//div[contains(@style, 'text-align')]")
+    paragraphs = container.xpath(".//p")
+    
+    structure_count = len(styled_divs) + len(paragraphs)
+    if structure_count > 0:
+        score += min(structure_count * 2, 20)
+    
+    # 
+    classes = container.get('class', '').lower()
+    elem_id = container.get('id', '').lower()
+    
+    content_keywords = ['content', 'article', 'detail', 'main', 'body', 'text', 'editor', 'con']
+    for keyword in content_keywords:
+        if keyword in classes or keyword in elem_id:
+            score += 15
+    
+    return score
+
+def find_main_content_area(containers):
+    """在有效容器中找到主内容区域"""
+    candidates = []
+    
+    for container in containers:
+        score = calculate_main_content_score(container)
+        if score > 0:
+            candidates.append((container, score))
+    
+    if not candidates:
+        return None
+    
+    # 
+    candidates.sort(key=lambda x: x[1], reverse=True)
+    main_area = candidates[0][0]
+    
+    logger.info(f"主内容区域得分: {candidates[0][1]}")
+    return main_area
+
+def calculate_main_content_score(container):
+    score = 0
+
+    text_content = get_clean_text_content_lxml(container).strip()
+    content_length = len(text_content)
+    
+    # 
+    if content_length > 500:
+        score += 30
+    elif content_length > 200:
+        score += 20
+    elif content_length > 100:
+        score += 10
+    else:
+        return -5  # 
+    
+    # 
+    images = container.xpath(".//img")
+    if len(images) > 0:
+        score += min(len(images) * 2, 15)
+    
+    # 
+    classes = container.get('class', '').lower()
+    elem_id = container.get('id', '').lower()
+    
+    content_keywords = ['content', 'main', 'article', 'detail', 'body']
+    for keyword in content_keywords:
+        if keyword in classes or keyword in elem_id:
+            score += 15
+    
+    return score
+
+
+    
+    # 
+    classes = container.get('class', '').lower()
+    if any(word in classes for word in ['content', 'article', 'detail', 'editor', 'text']):
+        score += 15
+    
+    return score
+
+
+
+def is_in_footer_area(element):
+    """检查元素是否在footer区域"""
+    current = element
+    depth = 0
+    while current is not None and depth < 10:  # 
+        classes = current.get('class', '').lower()
+        elem_id = current.get('id', '').lower()
+        tag_name = current.tag.lower()
+        
+        # 
+        footer_indicators = [
+            'footer', 'bottom', 'foot', 'end', 'copyright', 
+            'links', 'sitemap', 'contact', 'about'
+        ]
+        
+        for indicator in footer_indicators:
+            if (indicator in classes or indicator in elem_id or 
+                (tag_name == 'footer')):
+                return True, f"发现footer特征: {indicator} (第{depth}层)"
+        
+        # 
+        style = current.get('style', '').lower()
+        if 'bottom' in style or 'fixed' in style:
+            return True, f"发现底部样式 (第{depth}层)"
+        
+        current = current.getparent()
+        depth += 1
+    
+    return False, ""
+
+def find_list_container(page_tree):
+    # 
+    article_container = find_article_container(page_tree)
+    if article_container is not None:
+        return article_container    
+    list_selectors = [
+        "//li", "//tr", "//article",
+        "//div[contains(@class, 'item')]",
+        "//div[contains(@class, 'list')]",
+        "//ul//li", "//ol//li", "//table//tr",
+        "//section//ul[contains(@class, 'item')]",
+        "//section//ul[contains(@class, 'list')]",
+        "//section//div[contains(@class, 'list')]",
+        "//section//div[contains(@class, 'item')]"
+    ]
+    
+    def count_list_items(element):
+        items = element.xpath(".//li | .//tr | .//article | .//div[contains(@class, 'item')]")
+        return len(items)
+    
+    def calculate_container_score(container):
+        score = 0
+        debug_info = []
+        
+        # 
+        classes = container.get('class', '').lower()
+        elem_id = container.get('id', '').lower()
+        role = container.get('role', '').lower()
+        tag_name = container.tag.lower()
+        text_content = container.text_content().lower()
+        
+        # 
+        # 1. 
+        header_content_keywords = [
+            '登录', '注册', '首页', '主页', '无障碍', '办事', '无障碍浏览','打印','收藏','机构概况','在线服务','互动交流',
+            '走进', '移动版', '手机版', '导航', '菜单', '搜索', '市政府',
+            '长者模式','微信','ipv6','信息公开',
+            'login', 'register', 'home', 'menu', 'search', 'nav'
+        ]
+        
+        header_content_count = 0
+        for keyword in header_content_keywords:
+            if keyword in text_content:
+                header_content_count += 1
+        
+        # 
+        if header_content_count >= 2:
+            score -= 300  # 
+            debug_info.append(f"首部内容特征: -300 (发现{header_content_count}个首部关键词)")
+        
+        # 2. 
+        footer_content_keywords = [
+            '网站说明', '网站标识码', '版权所有', '主办单位', '承办单位', 
+            '技术支持', '联系我们', '网站地图', '隐私政策', '免责声明',
+            '备案号', 'icp', '公安备案', '政府网站', '网站管理',
+            'copyright', 'all rights reserved', 'powered by', 'designed by'
+        ]
+        
+        footer_content_count = 0
+        for keyword in footer_content_keywords:
+            if keyword in text_content:
+                footer_content_count += 1
+        
+        # 
+        if footer_content_count >= 2:
+            score -= 300  # 
+            debug_info.append(f"尾部内容特征: -300 (发现{footer_content_count}个尾部关键词)")
+        
+        footer_structure_indicators = ['footer', 'foot', 'bottom', 'end', 'copyright', 'links', 'sitemap']
+        for indicator in footer_structure_indicators:
+            if (indicator in classes or indicator in elem_id or 
+                indicator in role or tag_name == 'footer'):
+                score -= 250  # 
+                debug_info.append(f"Footer结构特征: -250 (发现'{indicator}')")
+        
+        header_structure_indicators = ['header', 'nav', 'navigation', 'menu', 'topbar', 'banner', 'menubar']
+        for indicator in header_structure_indicators:
+            if (indicator in classes or indicator in elem_id or 
+                indicator in role or tag_name in ['header', 'nav','menu']):
+                score -= 200  # 
+                debug_info.append(f"Header结构特征: -200 (发现'{indicator}')")
+        
+        current = container
+        depth = 0
+        while current is not None and depth < 5:  # 
+            parent_classes = current.get('class', '').lower()
+            parent_id = current.get('id', '').lower()
+            parent_tag = current.tag.lower()
+            
+            for indicator in footer_structure_indicators:
+                if (indicator in parent_classes or indicator in parent_id or parent_tag == 'footer'):
+                    penalty = max(60 - depth * 10, 15)  
+                    score -= penalty
+                    debug_info.append(f"祖先Footer: -{penalty} (第{depth}层'{indicator}')")
+            
+            for indicator in header_structure_indicators:
+                if (indicator in parent_classes or indicator in parent_id or parent_tag in ['header', 'nav']):
+                    penalty = max(50 - depth * 8, 12)  
+                    score -= penalty
+                    debug_info.append(f"祖先Header: -{penalty} (第{depth}层'{indicator}')")
+            
+            current = current.getparent()
+            depth += 1
+        
+        if score < -150:
+            return score
+        
+        precise_time_patterns = [
+            r'\d{4}-\d{2}-\d{2}',  
+            r'\d{4}年\d{1,2}月\d{1,2}日',  
+            r'\d{4}/\d{1,2}/\d{1,2}',  
+            r'发布时间', r'更新日期', r'发布日期', r'创建时间'
+        ]
+        
+        precise_matches = 0
+        for pattern in precise_time_patterns:
+            matches = len(re.findall(pattern, text_content))
+            precise_matches += matches
+        
+        if precise_matches > 0:
+            time_score = min(precise_matches * 30, 90)  
+            score += time_score
+            debug_info.append(f"时间特征: +{time_score} ({precise_matches}个匹配)")
+        
+        items = container.xpath(".//*[self::li or self::tr or self::article or self::div[contains(@class, 'item')]]")
+        if items:
+            total_length = sum(len(item.text_content().strip()) for item in items)
+            avg_length = total_length / len(items) if items else 0
+            
+            if avg_length > 150:
+                score += 40  
+                debug_info.append(f"文本长度: +40 (平均{avg_length:.1f}字符)")
+            elif avg_length > 80:
+                score += 30
+                debug_info.append(f"文本长度: +30 (平均{avg_length:.1f}字符)")
+            elif avg_length > 40:
+                score += 20
+                debug_info.append(f"文本长度: +20 (平均{avg_length:.1f}字符)")
+            elif avg_length < 20:  
+                score -= 20
+                debug_info.append(f"文本长度: -20 (平均{avg_length:.1f}字符，太短)")
+        
+        strong_positive_indicators = ['content', 'main', 'news', 'article', 'data', 'info', 'detail', 'result', 'list']
+        positive_score = 0
+        for indicator in strong_positive_indicators:
+            if indicator in classes or indicator in elem_id:
+                positive_score += 25  
+                debug_info.append(f"正面特征: +25 ('{indicator}')")
+        
+        score += min(positive_score, 75)  
+        
+        images = container.xpath(".//img")
+        links = container.xpath(".//a[@href]")
+        
+        if len(images) > 0:
+            image_score = min(len(images) * 3, 20)
+            score += image_score
+            debug_info.append(f"图片内容: +{image_score} ({len(images)}张图片)")
+        
+        if len(links) > 5:  
+            link_score = min(len(links) * 2, 30)
+            score += link_score
+            debug_info.append(f"链接内容: +{link_score} ({len(links)}个链接)")
+        
+        if items and len(items) > 2:
+            strong_nav_words = [
+                '登录', '注册', '首页', '主页', '无障碍', '办事', '无障碍浏览','打印','收藏','机构概况','在线服务','互动交流',
+                '走进', '移动版', '手机版', '导航', '菜单', '搜索', '市政府',
+                'login', 'register', 'home', 'menu', 'search', 'nav'
+            ]
+            nav_word_count = 0
+            
+            for item in items[:8]:  
+                item_text = item.text_content().strip().lower()
+                for nav_word in strong_nav_words:
+                    if nav_word in item_text:
+                        nav_word_count += 1
+                        break
+            
+            checked_items = min(len(items), 8)
+            if nav_word_count > checked_items * 0.4:  
+                nav_penalty = 30  
+                score -= nav_penalty
+                debug_info.append(f"导航词汇: -{nav_penalty} ({nav_word_count}/{checked_items}个)")
+        
+        container_info = f"标签:{tag_name}, 类名:{classes[:30]}{'...' if len(classes) > 30 else ''}"
+        if elem_id:
+            container_info += f", ID:{elem_id[:20]}{'...' if len(elem_id) > 20 else ''}"
+        
+        logger.info(f"容器评分: {score} - {container_info}")
+        for info in debug_info:  
+            logger.info(f"  {info}")
+        
+        return score
+    
+    all_items = []
+    for selector in list_selectors:
+        items = page_tree.xpath(selector)
+        all_items.extend(items)
+    
+    if not all_items:
+        return None
+    
+    parent_counts = {}
+    for item in all_items:
+        parent = item.getparent()
+        if parent is not None:
+            if parent not in parent_counts:
+                parent_counts[parent] = 0
+            parent_counts[parent] += 1
+    
+    if not parent_counts:
+        return None
+    
+    candidate_containers = [(parent, count) for parent, count in parent_counts.items() if count >= 3]
+    
+    
+    if not candidate_containers:
+        candidate_containers = [(parent, count) for parent, count in parent_counts.items() if count >= 2]
+    
+    
+    if not candidate_containers:
+        return max(parent_counts.items(), key=lambda x: x[1])[0]
+    
+     
+    scored_containers = []
+    for container, count in candidate_containers:
+        score = calculate_container_score(container)
+        
+         
+        is_footer, footer_msg = is_in_footer_area(container)
+        ancestry_penalty = 0
+        
+        if is_footer:
+            ancestry_penalty += 50  # 
+        
+        def check_negative_ancestry(element):
+            """检查元素及其祖先的负面特征"""
+            penalty = 0
+            current = element
+            depth = 0
+            while current is not None and depth < 4:  # 
+                classes = current.get('class', '').lower()
+                elem_id = current.get('id', '').lower()
+                text_content = current.text_content().lower()
+                
+                # 
+                negative_keywords = ['nav', 'menu', 'sidebar', 'header', 'topbar', 'navigation', 'head']
+                for keyword in negative_keywords:
+                    if keyword in classes or keyword in elem_id:
+                        penalty += 20  # 
+                
+                if depth < 2:
+                    footer_content_keywords = ['网站说明', '网站标识码', '版权所有', '备案号']
+                    header_content_keywords = ['登录', '注册', '首页', '无障碍']
+                    
+                    content_penalty = 0
+                    for keyword in footer_content_keywords + header_content_keywords:
+                        if keyword in text_content:
+                            content_penalty += 15
+                    
+                    if content_penalty > 30:  # 
+                        penalty += content_penalty
+                
+                current = current.getparent()
+                depth += 1
+            return penalty
+        
+        ancestry_penalty += check_negative_ancestry(container)
+        #
+        final_score = score - ancestry_penalty
+        
+        scored_containers.append((container, final_score, count))
+    
+    scored_containers.sort(key=lambda x: x[1], reverse=True)
+    
+    positive_scored = [sc for sc in scored_containers if sc[1] > 0]  # 
+    
+    if positive_scored:
+        best_container = positive_scored[0][0]
+        max_items = parent_counts[best_container]
+    else:
+        moderate_scored = [sc for sc in scored_containers if sc[1] > -50]
+        
+        if moderate_scored:
+            best_container = moderate_scored[0][0]
+            max_items = parent_counts[best_container]
+        else:
+            best_container = scored_containers[0][0]
+            max_items = parent_counts[best_container]
+    
+    current_container = best_container
+    while True:
+        parent = current_container.getparent()
+        if parent is None or parent.tag == 'html':
+            break
+        
+        def has_negative_ancestor(element):
+            """检查元素的祖先是否包含负面特征 - 包括内容特征"""
+            current = element
+            depth = 0
+            while current is not None and depth < 3:  
+                parent_classes = current.get('class', '').lower()
+                parent_id = current.get('id', '').lower()
+                parent_tag = current.tag.lower()
+                parent_text = current.text_content().lower()
+                
+                structure_negative = ['footer', 'nav', 'menu', 'sidebar', 'header', 'topbar', 'navigation', 'foot', 'head']
+                for keyword in structure_negative:
+                    if (keyword in parent_classes or keyword in parent_id or parent_tag in ['footer', 'header', 'nav']):
+                        return True
+                
+                if depth < 2:
+                    header_content = ['登录', '注册', '首页', '主页', '无障碍', '办事', '走进']
+                    header_count = sum(1 for word in header_content if word in parent_text)
+                    
+                    footer_content = ['网站说明', '网站标识码', '版权所有', '备案号', 'icp', '主办单位', '承办单位']
+                    footer_count = sum(1 for word in footer_content if word in parent_text)
+                    
+                    if header_count >= 2:
+                        return True
+                    if footer_count >= 2:
+                        return True
+                
+                current = current.getparent()
+                depth += 1
+            return False
+        
+        if has_negative_ancestor(parent):
+            logger.info("父级包含负面特征，停止向上搜索")
+            break
+            
+        parent_items = count_list_items(parent)
+        
+        parent_score = calculate_container_score(parent)
+        current_score = calculate_container_score(current_container)
+        
+        logger.info(f"比较得分: 当前={current_score}, 父级={parent_score}")
+        logger.info(f"项目数量: 当前={max_items}, 父级={parent_items}")
+        
+        should_upgrade = False
+        
+        if parent_score < -50:
+            logger.info(f"父级得分过低({parent_score})，跳过升级")
+        else:
+            if parent_score > current_score + 15 and parent_score > 10:
+                should_upgrade = True
+                logger.info("父级得分明显更高且为正分，升级")
+            
+            elif (parent_score >= current_score - 3 and 
+                  parent_score > 5 and  # 
+                  parent_items <= max_items * 2 and  
+                  parent_items >= max_items):
+                should_upgrade = True
+                logger.info("父级得分相近且为正分，升级")
+            
+            elif (max_items < 4 and 
+                  parent_items >= max_items and 
+                  parent_items <= 15 and 
+                  parent_score > 0):  
+                should_upgrade = True
+                logger.info("当前容器项目太少，升级到正分父级")
+        
+        if should_upgrade:
+            current_container = parent
+            max_items = parent_items
+            logger.info("升级到父级容器")
+        else:
+            logger.info("保持当前容器")
+            break
+        
+        if parent_items > 50:
+            logger.info(f"父级项目数量过多({parent_items})，停止向上搜索")
+            break
+    
+    final_items = count_list_items(current_container)
+    final_score = calculate_container_score(current_container)
+    logger.info(f"最终容器包含 {final_items} 个列表项，得分: {final_score}")
+    
+    if final_items < 4 or final_score < -10:
+        parent = current_container.getparent()
+        if parent is not None and parent.tag != 'html':
+            parent_items = count_list_items(parent)
+            parent_score = calculate_container_score(parent)
+            
+            if (parent_items > final_items and 
+                parent_score > 0 and  # 
+                parent_items <= 30):  # 
+                logger.info(f"最终调整：选择正分父级容器 (项目数: {parent_items}, 得分: {parent_score})")
+                current_container = parent
+            else:
+                logger.info(f"父级不符合条件 (项目数: {parent_items}, 得分: {parent_score})，保持当前选择")
+    
+    return current_container
+def generate_xpath(element):
+    if element is None:
+        return None
+
+    tag = element.tag
+
+    elem_id = element.get('id')
+    if elem_id and not is_interference_identifier(elem_id):
+        return f"//{tag}[@id='{elem_id}']"
+
+   
+    classes = element.get('class')
+    if classes:
+        return f"//{tag}[@class='{classes}']"
+
+    for attr in ['aria-label', 'role', 'data-testid', 'data-role']:
+        attr_value = element.get(attr)
+        if attr_value and not is_interference_identifier(attr_value):
+            return f"//{tag}[@{attr}='{attr_value}']"
+
+    def find_closest_clean_identifier(el):
+        parent = el.getparent()
+        while parent is not None and parent.tag != 'html':
+            parent_id = parent.get('id')
+            if parent_id and not is_interference_identifier(parent_id):
+                return parent
+            
+            parent_classes = parent.get('class')
+            if parent_classes:
+                parent_class_list = [cls.strip() for cls in parent_classes.split() if cls.strip()]
+                clean_parent_classes = [cls for cls in parent_class_list if not is_interference_identifier(cls)]
+                if clean_parent_classes:
+                    return parent
+            parent = parent.getparent()
+        return None
+
+    ancestor = find_closest_clean_identifier(element)
+    if ancestor is not None:
+        ancestor_xpath = generate_xpath(ancestor)
+        if ancestor_xpath:
+            def generate_relative_path(ancestor_el, target_el):
+                path = []
+                current = target_el
+                while current is not None and current != ancestor_el:
+                    index = 1
+                    sibling = current.getprevious()
+                    while sibling is not None:
+                        if sibling.tag == current.tag:
+                            index += 1
+                        sibling = sibling.getprevious()
+                    path.insert(0, f"{current.tag}[{index}]")
+                    current = current.getparent()
+                return '/' + '/'.join(path)
+
+            relative_path = generate_relative_path(ancestor, element)
+            return f"{ancestor_xpath}{relative_path}"
+
+    path = []
+    current = element
+    while current is not None and current.tag != 'html':
+        index = 1
+        sibling = current.getprevious()
+        while sibling is not None:
+            if sibling.tag == current.tag:
+                index += 1
+            sibling = sibling.getprevious()
+        path.insert(0, f"{current.tag}[{index}]")
+        current = current.getparent()
+
+    return '/' + '/'.join(path)
+
+def is_interference_identifier(identifier):
+    if not identifier:
+        return False
+    
+    identifier_lower = identifier.lower()
+    
+    interference_keywords = [
+        'header', 'footer', 'nav', 'navigation', 'menu', 'menubar',
+        'topbar', 'bottom', 'sidebar', 'aside', 'banner', 'ad'
+    ]
+    
+    for keyword in interference_keywords:
+        if keyword in identifier_lower:
+            return True
+    
+    return False
+
+
+import json 
+def clean_html_content_advanced_two(html_content: str) -> str:
+   
+    try:
+        soup = BeautifulSoup(html_content, 'html.parser')
+
+         
+        for tag in soup.find_all(['script', 'style', 'meta', 'link', 'noscript']):
+            tag.decompose()
+
+        
+        tags_to_delete = [
+            "已阅","字号", "打印", "关闭", "收藏","分享到微信","分享","字体","小","中","大","s92及gd格式的文件请用SEP阅读工具",
+            "扫一扫在手机打开当前页", "扫一扫在手机上查看当前页面","用微信“扫一扫”","分享给您的微信好友",
+            "相关链接",'下载文字版','下载图片版','扫一扫在手机打开当前页面',"微信扫一扫：分享","上一篇","下一篇","【打印文章】","返回顶部","你的浏览器不支持video",
+            "当前位置：","首页","信息公开目录","索引号","发布时间：202"
+        ]
+
+        for tag_text in tags_to_delete:
+            delete_short_tags(soup, tag_text)
+
+        error_elements_to_delete = []
+
+        for element in soup.find_all(string=re.compile("我要纠错")):
+            #  elment  
+            if not hasattr(element, 'parent') or element.parent is None:
+                continue
+
+            parent = element.parent
+
+            #  parent 
+            if not hasattr(parent, 'get_text') or not hasattr(parent, 'decompose'):
+                continue
+
+            try:
+                if parent and len(parent.get_text(strip=True)) < 20:  # 
+                    error_elements_to_delete.append(parent)
+            except Exception:
+                # 
+                continue
+
+        # 
+        for parent in error_elements_to_delete:
+            try:
+                if parent and hasattr(parent, 'decompose'):
+                    parent.decompose()
+            except Exception:
+                pass
+
+        # 保留属性列表
+        essential_attributes = {
+            'div': [], 'p': [], 'span': [],
+            'table': ['border', 'cellpadding', 'cellspacing'],
+            'tr': [], 'td': ['colspan', 'rowspan'], 'th': ['colspan', 'rowspan'],
+            'ul': [], 'ol': [], 'li': [],
+            'a': ['href', 'target'],
+            'img': ['src'],
+            'video': ['src', 'poster', 'controls'],
+            'source': ['src'],
+            'iframe': ['src'],
+            'br': [], 'hr': []
+        }
+
+        def clean_attributes(tag):
+            if tag.name is None:
+                return
+
+            allowed_attrs = essential_attributes.get(tag.name, [])
+
+            #   
+            if tag.has_attr('style'):
+                del tag['style']
+
+            attrs_to_remove = [attr for attr in tag.attrs if attr not in allowed_attrs]
+            for attr in attrs_to_remove:
+                del tag[attr]
+
+        for tag in soup.find_all(True):
+            clean_attributes(tag)
+
+        # 
+        for table in soup.find_all('table'):
+            cleaned_table = clean_table_html(str(table))
+            table.replace_with(BeautifulSoup(cleaned_table, 'html.parser'))
+
+        # 
+        remove_empty_tags(soup)
+
+        return str(soup)
+
+    except Exception as e:
+        return html_content
+def progressResult(json_str: dict) -> dict:
+
+    try:
+        markdown_content = json_str.get("markdown_content", '')
+        html_contents = json_str.get("html_content", '')
+        xpath = json_str.get('xpath', '')
+        elapsed = json_str.get('elapsed', 0)
+
+        # 基础结果结构
+        result = {
+            'markdown_content': markdown_content,
+            'html_content': html_contents,
+            'xpath': xpath,
+            'elapsed': elapsed,
+            'header_content_text': '',  #
+            'cl_content_html': '',      #
+            'cl_content_md': '',        #
+            'cl_content_text': '',      #
+            'extract_success': False
+        }
+
+        if not html_contents.strip():
+            return result
+
+        header_content_text, cl_content_html, cl_content_md, cl_content_text = clean_html_content_with_split(html_contents)
+
+        extract_success = bool(
+            cl_content_md.strip() and
+            len(cl_content_md) > 150
+        )
+
+        if not extract_success:
+            logger.debug("提取失败，使用clean_html_content_advanced处理原始html_content")
+            cl_content_html = clean_html_content_advanced_two(html_contents)
+
+            # 复用现在的处理逻辑生成md和text
+            cl_content_md = html_to_markdown_simple(cl_content_html)
+
+            content_soup = BeautifulSoup(cl_content_html, 'html.parser')
+            cl_content_text = clean_text(content_soup.get_text())
+
+            # 重新判断提取是否成功
+            extract_success = bool(
+                cl_content_md.strip() and
+                len(cl_content_md) > 150
+            )
+
+            logger.debug(f"使用clean_html_content_advanced重新处理后的extract_success: {extract_success}")
+
+        result.update({
+            'header_content_text': header_content_text,  #
+            'cl_content_html': cl_content_html,          #
+            'cl_content_md': cl_content_md,              #
+            'cl_content_text': cl_content_text,          #
+            'extract_success': extract_success
+        })
+
+        return result
+
+    except Exception as e:
+        import traceback
+        logger.debug(f"progressResult处理出错: {str(e)}")
+        logger.debug(f"错误堆栈: {traceback.format_exc()}")
+
+        try:
+            markdown_content = json_str.get('markdown_content', '') if isinstance(json_str, dict) else ''
+            html_content = json_str.get('html_content', '') if isinstance(json_str, dict) else ''
+            xpath = json_str.get('xpath', '') if isinstance(json_str, dict) else ''
+            elapsed = json_str.get('elapsed', 0) if isinstance(json_str, dict) else 0
+        except:
+            markdown_content = ''
+            html_content = ''
+            xpath = ''
+            elapsed = 0
+
+        return {
+            'markdown_content': markdown_content,
+            'html_content': html_content,
+            'xpath': xpath,
+            'elapsed': elapsed,
+            'header_content_text': '',  #
+            'cl_content_html': '',      #
+            'cl_content_md': '',        #
+            'extract_success': False
+        }
+
+
+def clean_footer_content(html_content: str) -> str:
+    try:
+        soup = BeautifulSoup(html_content, 'html.parser')
+
+        # 定义尾部无关内容的特征
+        footer_patterns = [
+            r'网站说明',
+            r'网站标识码',
+            r'版权所有',
+            r'主办单位',
+            r'承办单位',
+            r'技术支持',
+            r'联系我们',
+            r'网站地图',
+            r'隐私政策',
+            r'免责声明',
+            r'备案号',
+            r'icp备案',
+            r'公安备案',
+            r'政府网站',
+            r'网站管理',
+            r'copyright',
+            r'all rights reserved',
+            r'powered by',
+            r'打印',
+            r'分享',
+            r'收藏',
+            r'扫一扫'
+        ]
+
+        elements_to_remove = []
+        for element in soup.find_all(True):
+            text = element.get_text().strip().lower()
+            for pattern in footer_patterns:
+                if re.search(pattern, text, re.IGNORECASE):
+                    elements_to_remove.append(element)
+                    break
+
+        for element in elements_to_remove:
+            element.decompose()
+
+        return str(soup)
+
+    except Exception as e:
+        logger.debug(f"清理尾部内容时出错: {str(e)}")
+        return html_content
+
+
+def html_to_markdown_simple(html_content: str) -> str:
+    try:
+        if not html_content.strip():
+            return ''
+
+        converter = CustomMarkdownConverter(
+            heading_style="ATX",
+            bullets="*",
+            strip=['script', 'style']
+        )
+
+        markdown_content = converter.convert(html_content)
+
+        markdown_content = re.sub(r'\n\s*\n\s*\n', '\n\n', markdown_content)
+
+        return markdown_content.strip()
+
+    except Exception as e:
+        logger.debug(f"HTML转Markdown时出错: {str(e)}")
+        return ''
+
+
+@app.get("/")
+async def root():
+    return {
+        "message": "HTML to Markdown Content Extractor API",
+        "version": "2.0.0",
+        "endpoints": {
+            "/extract": "POST - Extract main content from HTML and convert to Markdown",
+            "/health": "GET - Health check"
+        }
+    }
+
+@app.get("/health")
+async def health_check():
+
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat()
+    }
+import time
+@app.post("/extract", response_model=MarkdownOutput)
+async def extract_html_to_markdown(input_data: HTMLInput):
+
+    try:
+        if not input_data.html_content.strip():
+            raise HTTPException(status_code=400, detail="HTML内容不能为空")
+        
+        start_time = time.time()  
+
+        result = extract_content_to_markdown(input_data.html_content)
+
+        if result['status'] == 'failed':
+            raise HTTPException(status_code=422, detail="无法从HTML中提取有效内容")
+
+        final_result = progressResult(result)
+
+        end_time = time.time() 
+        elapsed = end_time - start_time
+
+        return MarkdownOutput(
+            markdown_content=final_result.get('markdown_content', result['markdown_content']),
+            html_content=final_result.get('html_content', result['html_content']),
+            xpath=final_result.get('xpath', result['xpath']),
+            status=final_result.get('status', result['status']),
+            process_time=elapsed,
+            header_content_text=final_result.get('header_content_text', ''),
+            cl_content_html=final_result.get('cl_content_html', ''),
+            cl_content_md=final_result.get('cl_content_md', ''),
+            cl_content_text=final_result.get('cl_content_text',''),
+            extract_success=final_result.get('extract_success', False)
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"处理请求时出错: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"服务器内部错误: {str(e)}")
+
+import os
+import glob
+
+
+def start_server(host: str = "0.0.0.0", port: int = 8321):
+    uvicorn.run(app, host=host, port=port)
+
+if __name__ == "__main__":
+    import sys
+    
+    if len(sys.argv) > 1 and sys.argv[1] == "api":
+        
+        start_server()
