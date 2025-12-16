@@ -5,11 +5,12 @@ import aiohttp
 import aiofiles
 import requests
 import urllib.parse
+from urllib.parse import parse_qs, urlencode, urlunparse
 from pathlib import Path
 from bs4 import BeautifulSoup
 from markdownify import MarkdownConverter
 import markdownify
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Set
 import logging
 import uuid
 import json
@@ -152,165 +153,7 @@ class HTMLToMarkdownConverter:
         self.base_url = base_url
         self.downloaded_files: Dict[str, str] = {}
 
-    async def download_file(self, session: aiohttp.ClientSession, url: str) -> Optional[str]:
-        """
-        异步下载文件到本地
-        """
-        try:
-            if not url.startswith(('http://', 'https://')):
-                if self.base_url:
-                    url = urllib.parse.urljoin(self.base_url, url)
-                else:
-                    logger.warning(f"无法处理相对URL: {url}")
-                    return None
-
-            if url in self.downloaded_files:
-                return self.downloaded_files[url]
-
-            parsed_url = urllib.parse.urlparse(url)
-            filename = os.path.basename(parsed_url.path)
-            if not filename:
-                filename = f"download_{len(self.downloaded_files)}"
-
-            ext = os.path.splitext(filename)[1].lower()
-            if ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp']:
-                subdir = self.output_dir / "images"
-            elif ext in ['.mp4', '.avi', '.mov', '.wmv']:
-                subdir = self.output_dir / "videos"
-            elif ext in ['.pdf', '.doc', '.docx', '.txt']:
-                subdir = self.output_dir / "documents"
-            else:
-                subdir = self.output_dir / "files"
-
-            subdir.mkdir(exist_ok=True)
-            file_path = subdir / filename
-
-            counter = 1
-            original_path = file_path
-            while file_path.exists():
-                stem = original_path.stem
-                suffix = original_path.suffix
-                file_path = subdir / f"{stem}_{counter}{suffix}"
-                counter += 1
-
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as response:
-                response.raise_for_status()
-
-                async with aiofiles.open(file_path, 'wb') as f:
-                    async for chunk in response.content.iter_chunked(8192):
-                        await f.write(chunk)
-
-                local_path = str(file_path.relative_to(self.output_dir.parent))
-                self.downloaded_files[url] = local_path
-                logger.info(f"文件下载完成: {local_path}")
-                return local_path
-
-        except Exception as e:
-            logger.error(f"下载失败 {url}: {str(e)}")
-            return None
-
     
-    async def collect_download_urls(self, html_content: str) -> List[Tuple[str, str]]:
-        """
-        从HTML内容中收集所有需要下载的URL
-        """
-        soup = BeautifulSoup(html_content, 'html.parser')
-        download_tasks = []
-
-        # 收集图片
-        for img in soup.find_all('img'):
-            src = img.get('src')
-            if src:
-                if not src.startswith(('http://', 'https://')) and self.base_url:
-                    src = urllib.parse.urljoin(self.base_url, src)
-                download_tasks.append(('img', src))
-
-        # 收集视频相关链接
-        for div in soup.find_all('div'):
-            div_class = div.get('class') or []
-            div_id = div.get('id') or ""
-            div_class_str = " ".join(div_class) if isinstance(div_class, list) else str(div_class)
-
-            # video标签
-            video_tags = div.find_all("video")
-            for video_tag in video_tags:
-                video_src = video_tag.get('src')
-                if video_src and video_src.endswith('.mp4'):
-                    if not video_src.startswith(('http://','https://')) and self.base_url:
-                        video_src = urllib.parse.urljoin(self.base_url, video_src)
-                    download_tasks.append(('video_src', video_src))
-
-                poster_src = video_tag.get('poster')
-                if poster_src:
-                    if not poster_src.startswith(('http://', 'https://')) and self.base_url:
-                        poster_src = urllib.parse.urljoin(self.base_url, poster_src)
-                    download_tasks.append(('poster', poster_src))
-
-                source_tags = video_tag.find_all('source')
-                for source_tag in source_tags:
-                    source_src = source_tag.get('src')
-                    if source_src:
-                        if not source_src.startswith(('http://', 'https://')) and self.base_url:
-                            source_src = urllib.parse.urljoin(self.base_url, source_src)
-                        download_tasks.append(('video_source', source_src))
-
-            # iframe视频
-            if ("video" in div_class_str or "video" in str(div_id)) and not div.find_all("video"):
-                video_url = None
-                iframe = div.find('iframe')
-                if iframe and iframe.get('src'):
-                    video_url = iframe['src']
-                else:
-                    for tag in div.find_all(True, recursive=True):
-                        for attr in ['src', 'data-src', 'href']:
-                            val = tag.get(attr)
-                            if val and isinstance(val, str) and ('.mp4' in val or 'player' in val or 'video' in val):
-                                video_url = val
-                                break
-                        if video_url:
-                            break
-
-                if video_url:
-                    if not video_url.startswith(('http://', 'https://')) and self.base_url:
-                        video_url = urllib.parse.urljoin(self.base_url, video_url)
-                    download_tasks.append(('video', video_url))
-
-        # source标签
-        for source in soup.find_all('source'):
-            src = source.get('src')
-            if src:
-                if not src.startswith(('http://', 'https://')) and self.base_url:
-                    src = urllib.parse.urljoin(self.base_url, src)
-                download_tasks.append(('source', src))
-
-        # 下载链接
-        for a in soup.find_all('a'):
-            href = a.get('href')
-            if href and self.is_download_link(href):
-                if not href.startswith(('http://', 'https://')) and self.base_url:
-                    href = urllib.parse.urljoin(self.base_url, href)
-                download_tasks.append(('a', href))
-
-        return download_tasks
-
-    async def download_all_files(self, download_tasks: List[Tuple[str, str]]) -> Dict[str, str]:
-        """
-        批量下载文件
-        """
-        url_to_local_path = {}
-
-        print(f"=== 开始下载 {len(download_tasks)} 个文件 ===")
-        async with aiohttp.ClientSession() as session:
-            for i, (tag_type, url) in enumerate(download_tasks):
-                print(f"下载任务 {i+1}/{len(download_tasks)}: {tag_type}, {url}")
-                local_path = await self.download_file(session, url)
-                if local_path:
-                    url_to_local_path[url] = local_path
-                    print(f"下载成功: {local_path}")
-                else:
-                    print(f"下载失败: {url}")
-
-        return url_to_local_path
 
     async def replace_urls_with_local_paths(self, html_content: str, url_to_local_path: Dict[str, str]) -> str:
         """
@@ -509,11 +352,6 @@ class HTMLToMarkdownConverter:
             async with aiofiles.open("test_output.html",'w',encoding='utf-8')as f:
                 await f.write(html_content)
         
-            # 2. 收集下载链接
-            download_tasks = await self.collect_download_urls(html_content)
-
-            # 3. 下载文件
-            url_to_local_path = await self.download_all_files(download_tasks)
 
             # 4. 替换链接
             html_with_local_paths = await self.replace_urls_with_local_paths(html_content, url_to_local_path)
@@ -533,6 +371,58 @@ class HTMLToMarkdownConverter:
             logger.error(f"转换过程中发生错误: {str(e)}")
             raise
 
+IGNORED_QUERY_PARAMS: Set[str] = {
+    'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
+    'ref', '_t', 'timestamp', 'v', 'cache_bust'
+}
+def normalize_url(url: str, ignore_params: Set[str] = IGNORED_QUERY_PARAMS) -> str:
+    """
+    对URL进行标准化，用于去重和哈希。
+
+    处理：
+    - host 转为小写（DNS 不区分大小写）
+    - query 参数按键名排序
+    - 过滤掉无意义的跟踪参数（可选）
+    - 移除 fragment（#xxx）
+    - 保留原始 path（不强制小写，因 OSS/S3 路径通常区分大小写）
+
+    注意：返回的是标准化后的字符串，用于生成哈希；原始 URL 应另存用于实际请求。
+    """
+    parsed = urllib.parse.urlparse(url)
+    
+    # 解析 query，保留多值参数（如 ?a=1&a=2）
+    query_dict = parse_qs(parsed.query, keep_blank_values=True)
+    
+    # 可选：移除无意义参数
+    if ignore_params:
+        query_dict = {k: v for k, v in query_dict.items() if k not in ignore_params}
+    
+    # 按 key 排序，并展开多值（urlencode 需要 list of (key, value)）
+    sorted_items = []
+    for key in sorted(query_dict.keys()):
+        values = query_dict[key]
+        for val in values:
+            sorted_items.append((key, val))
+    
+    # 生成标准化 query string（不二次编码已解码的值）
+    normalized_query = urlencode(
+        sorted_items,
+        doseq=False,
+        safe='',
+        quote_via=lambda x, *args, **kwargs: x  # 保持原样，避免重复编码
+    )
+    
+    # 重建 URL：scheme + 小写 netloc + 原始 path + params + 标准化 query + 无 fragment
+    normalized = urlunparse((
+        parsed.scheme,
+        parsed.netloc.lower(),
+        parsed.path,
+        parsed.params,
+        normalized_query,
+        ''  # 清空 fragment
+    ))
+    
+    return normalized
 class URLPlaceholderReplacer:
     """
     独立的URL占位符替换器
@@ -541,9 +431,6 @@ class URLPlaceholderReplacer:
 
     def __init__(self):
         self.placeholder_mapping = {}  # 存储占位符与原始URL的对应关系
-        self.url_counter = {}  # 用于处理相同URL的重复
-        self.used_placeholders = set()  # 跟踪已使用的占位符，避免哈希冲突
-        self.position_hashes = {}  # 存储每个URL的位置哈希
 
     def is_media_url(self, url: str) -> bool:
         """
@@ -577,63 +464,22 @@ class URLPlaceholderReplacer:
 
         return False
 
-    def _generate_position_hash(self, url: str) -> str:
-        """
-        为URL的每个位置生成8位哈希标识
-        相同URL的不同位置会有不同的8位哈希
-        """
-        if url not in self.position_hashes:
-            self.position_hashes[url] = []
-
-        # 生成基于URL和位置的哈希
-        position = len(self.position_hashes[url])  # 当前位置索引
-        unique_string = f"{url}_{position}_{random.randint(1000, 9999)}"
-
-        # 生成8位哈希
-        position_hash = hashlib.md5(unique_string.encode('utf-8')).hexdigest()[:8]
-
-        # 确保哈希唯一（如果重复则重新生成）
-        while position_hash in self.position_hashes[url]:
-            unique_string = f"{url}_{position}_{random.randint(1000, 9999)}"
-            position_hash = hashlib.md5(unique_string.encode('utf-8')).hexdigest()[:8]
-
-        # 记录这个位置的哈希
-        self.position_hashes[url].append(position_hash)
-
-        return position_hash
 
     def _generate_placeholder(self, url: str, element_type: str = "") -> str:
         """
-        生成占位符，格式：{8位md5}_{8位哈希}
-
-        规则：
-        1. 8位md5：URL的MD5的前8位（相同URL相同md5）
-        2. 8位哈希：基于URL和位置的唯一哈希（相同URL不同位置不同哈希）
+        相同语义的 URL（即使参数顺序不同）会生成相同占位符。
         """
-        # 1. 生成URL的MD5（相同URL相同MD5）
-        url_md5 = hashlib.md5(url.encode('utf-8')).hexdigest()
-        file_md5 = url_md5[:8]      # 前8位作为md5部分
-
-        # 2. 生成位置哈希（相同URL不同位置不同哈希）
-        position_hash = self._generate_position_hash(url)
-
-        placeholder = f"{file_md5}_{position_hash}"
-
-        # 检查并确保占位符是唯一的
-        counter = 1
-        while placeholder in self.used_placeholders:
-            # 发现冲突，添加一个数字后缀
-            placeholder = f"{file_md5}_{position_hash}_{counter}"
-            counter += 1
-
-        self.used_placeholders.add(placeholder)
-
+        normalized_url = normalize_url(url)
+        
+        url_md5 = hashlib.md5(normalized_url.encode('utf-8')).hexdigest()
+        placeholder = url_md5[:24]
+        
+        self.placeholder_mapping[placeholder] = url
+        
         return placeholder
-
     def replace_urls_with_placeholders(self, html_content: str, base_url: str = "") -> str:
         """
         将HTML中的媒体文件URL替换为占位符
-        格式：{文件夹前缀}/{8位md5}_{8位哈希}.{扩展名}
         """
         soup = BeautifulSoup(html_content, 'html.parser')
 
@@ -711,199 +557,8 @@ class URLPlaceholderReplacer:
 
         return str(soup)
 
+   
 
-    def save_mapping_to_file(self, output_file: str = "placeholder_mapping.json"):
-        """
-        将占位符与原始URL的对应关系保存到JSON文件
-        """
-        try:
-            with open(output_file, 'w', encoding='utf-8') as f:
-                json.dump(self.placeholder_mapping, f, ensure_ascii=False, indent=2)
-            print(f"✓ 占位符映射关系已保存到: {output_file}")
-        except Exception as e:
-            print(f"✗ 保存映射文件失败: {str(e)}")
-
-    def process_html_file(self, input_file: str, output_file: str = None, mapping_file: str = None):
-        """
-        处理HTML文件，替换URL为占位符并保存映射关系
-
-        Args:
-            input_file: 输入HTML文件路径
-            output_file: 输出HTML文件路径（可选，默认在原文件名基础上添加_placeholder）
-            mapping_file: 映射关系文件路径（可选，默认为placeholder_mapping.json）
-        """
-        try:
-            # 读取HTML文件
-            with open(input_file, 'r', encoding='utf-8') as f:
-                html_content = f.read()
-            
-            # 替换URL为占位符
-            processed_html = self.replace_urls_with_placeholders(html_content)
-
-            # 保存处理后的HTML
-            if output_file is None:
-                input_path = Path(input_file)
-                output_file = str(input_path.parent / f"{input_path.stem}_placeholder{input_path.suffix}")
-
-            with open(output_file, 'w', encoding='utf-8') as f:
-                f.write(processed_html)
-
-            print(f"✓ 处理后的HTML已保存到: {output_file}")
-
-            # 保存映射关系
-            if mapping_file is None:
-                mapping_file = "test_output_placeholder_mapping.json"
-            self.save_mapping_to_file(mapping_file)
-
-            return output_file, mapping_file
-
-        except Exception as e:
-            print(f"✗ 处理文件失败: {str(e)}")
-            return None, None
-
-
-async def test_placeholder_replacement():
-
-    # 创建替换器实例
-    replacer = URLPlaceholderReplacer()
-
-    # 处理test_output.html文件
-    input_file = "test_output.html"
-    if os.path.exists(input_file):
-        output_file, mapping_file = replacer.process_html_file(input_file)
-        
-        with open(output_file, 'r', encoding='utf-8') as f:
-            content_html = f.read()
-        
-        converter = CustomMarkdownConverter(
-            heading_style="ATX",
-            bullets="*",
-            strip=['script', 'style']
-        )
-
-        markdown_content = converter.convert(content_html)
-
-        # 清理多余空行
-        markdown_content = re.sub(r'\n\s*\n\s*\n', '\n\n', markdown_content)
-
-        with open("test_output_placeholder.md", 'w', encoding='utf-8') as f:
-            f.write(markdown_content)
-    else:
-        print(f"文件不存在: {input_file}")
-
-
-async def main():
-    example_html = ""
-    with open("1.html", 'r', encoding='utf-8') as f:
-        example_html = f.read()
-
-    response = requests.post(
-        "http://127.0.0.1:8321/extract",
-        json={
-            "html_content": example_html,
-            "url":"https://www.gov.cn/zhengce/202510/content_7046643.htm"
-            }
-    )
-    print("Status Code:", response.status_code)
-
-    if response.status_code == 200:
-        try:
-            result = response.json()
-            markdown_content = result.get("cl_content_md", response.text)  
-            html_content = result.get("cl_content_html",response.text)
-
-            # 第二类型
-            html_without_holder = result.get("cl_content_html", response.text)
-            md_without_holder = result.get("cl_content_md", response.text)
-            text_without_holder = result.get("cl_content_text", response.text)
-        except ValueError:
-            markdown_content = response.text
-    else:
-        print("Request failed!")
-        
-    # 创建转换器实例
-    converter = HTMLToMarkdownConverter(
-        output_dir="downloads",
-        base_url="https://www.gov.cn/zhengce/202510/"
-    )
-
-    # 执行转换
-    try:
-        output_file = await converter.convert_html_to_markdown(html_content, "test_output.md")
-
-    except Exception as e:
-        print(f"转换失败：{str(e)}")
-
-
-def process_content(url_input, html_input):
-    """
-    处理输入的内容并返回结果
-    """
-    try:
-
-        html_content = html_input
-        url = url_input
-
-        if not html_content:
-            return "HTML内容不能为空", "", "", "", "", "", ""
-
-        # 处理base_url
-        if url:
-            base_url = process_base_url(url)
-        else:
-            base_url = ""
-
-        # 调用API获取结果
-        response = requests.post(
-            "http://192.168.182.41:8000/extract",
-            json={
-                "html_content": html_content,
-                "url": url
-            },
-            timeout=30
-        )
-
-        if response.status_code != 200:
-            return f"API调用失败: {response.status_code}", "", "", "", "", "", ""
-
-        result = response.json()
-
-        # 不带占位符的结果
-        html_without_holder = result.get("cl_content_html", "")
-        md_without_holder = result.get("cl_content_md", "")
-        text_without_holder = result.get("cl_content_text", "")
-
-        # 处理带占位符的结果
-        replacer = URLPlaceholderReplacer()
-        html_with_placeholders = replacer.replace_urls_with_placeholders(html_content)
-
-        # 转换带占位符的Markdown
-        converter = CustomMarkdownConverter(
-            heading_style="ATX",
-            bullets="*",
-            strip=['script', 'style']
-        )
-        md_with_placeholders = converter.convert(html_with_placeholders)
-        md_with_placeholders = clean_markdown_content(md_with_placeholders)
-
-        # 生成带占位符的纯文本
-        soup = BeautifulSoup(html_with_placeholders, 'html.parser')
-        for script in soup(["script", "style"]):
-            script.decompose()
-        text_with_placeholders = soup.get_text()
-        lines = (line.strip() for line in text_with_placeholders.splitlines())
-        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-        text_with_placeholders = '\n'.join(chunk for chunk in chunks if chunk)
-
-        # 生成占位符映射关系
-        placeholder_mapping = json.dumps(replacer.placeholder_mapping, ensure_ascii=False, indent=2)
-
-        return ("处理成功",
-                html_with_placeholders, md_with_placeholders, text_with_placeholders, placeholder_mapping,
-                html_without_holder, md_without_holder, text_without_holder)
-
-    except Exception as e:
-        return f"处理出错: {str(e)}", "", "", "", "", "", ""
 
 def process_base_url(url):
     """
@@ -933,131 +588,7 @@ def process_base_url(url):
         logger.error(f"URL处理错误: {e}")
         return url
 
-def create_gradio_interface():
-    """
-    创建Gradio界面
-    """
-    with gr.Blocks(title="HTML转Markdown处理器", theme=gr.themes.Soft()) as interface:
-        gr.Markdown("# HTML转Markdown处理器")
-        gr.Markdown("将HTML内容转换为带占位符或不带占位符的Markdown格式")
 
-        with gr.Row():
-            # 左侧输入面板
-            with gr.Column(scale=1):
-                gr.Markdown("## 输入参数")
-
-                url_input = gr.Textbox(
-                    label="URL地址",
-                    placeholder="请输入URL地址，例如：https://example.com",
-                    lines=1
-                )
-
-                html_json_input = gr.Textbox(
-                    label="HTML内容",
-                    placeholder='请输入HTML内容',
-                    lines=15
-                )
-
-                process_btn = gr.Button("处理内容", variant="primary", size="lg")
-
-                status_output = gr.Textbox(label="处理状态", interactive=False)
-
-            # 右侧输出面板
-            with gr.Column(scale=2):
-                gr.Markdown("## 输出结果")
-
-                with gr.Tabs():
-                    # 带占位符的标签页
-                    with gr.TabItem("带占位符"):
-                        with gr.Tabs():
-                            with gr.TabItem("HTML"):
-                                placeholder_html_output = gr.Code(
-                                    label="带占位符的HTML",
-                                    language="html",
-                                    lines=20,
-                                    max_lines=30
-                                )
-
-                            with gr.TabItem("Markdown"):
-                                placeholder_md_output = gr.Code(
-                                    label="带占位符的Markdown",
-                                    language="markdown",
-                                    lines=20,
-                                    max_lines=30
-                                )
-
-                            with gr.TabItem("纯文本"):
-                                placeholder_text_output = gr.Code(
-                                    label="带占位符的纯文本",
-                                    language="text",
-                                    lines=20,
-                                    max_lines=30
-                                )
-
-                            with gr.TabItem("映射关系"):
-                                placeholder_mapping_output = gr.Code(
-                                    label="占位符映射关系 (JSON)",
-                                    language="json",
-                                    lines=20,
-                                    max_lines=30
-                                )
-
-                    # 不带占位符的标签页
-                    with gr.TabItem("不带占位符"):
-                        with gr.Tabs():
-                            with gr.TabItem("HTML"):
-                                no_placeholder_html_output = gr.Code(
-                                    label="不带占位符的HTML",
-                                    language="html",
-                                    lines=20,
-                                    max_lines=30
-                                )
-
-                            with gr.TabItem("Markdown"):
-                                no_placeholder_md_output = gr.Code(
-                                    label="不带占位符的Markdown",
-                                    language="markdown",
-                                    lines=20,
-                                    max_lines=30
-                                )
-
-                            with gr.TabItem("纯文本"):
-                                no_placeholder_text_output = gr.Code(
-                                    label="不带占位符的纯文本",
-                                    language="text",
-                                    lines=20,
-                                    max_lines=30
-                                )
-
-        # 绑定处理函数
-        process_btn.click(
-            fn=process_content,
-            inputs=[url_input, html_json_input],
-            outputs=[
-                status_output,
-                placeholder_html_output,
-                placeholder_md_output,
-                placeholder_text_output,
-                placeholder_mapping_output,
-                no_placeholder_html_output,
-                no_placeholder_md_output,
-                no_placeholder_text_output
-            ]
-        )
-
-        # 添加示例
-        gr.Markdown("## 使用示例")
-        gr.Examples(
-            examples=[
-                [
-                    "https://www.gov.cn/zhengce/202510/content_7046643.htm",
-                    '{\n  "html_content": "<html><body><h1>测试标题</h1><p>测试内容</p><img src=\\"test.jpg\\" /><video src=\\"test.mp4\\"></video></body></html>",\n  "url": "https://www.gov.cn/zhengce/202510/content_7046643.htm"\n}'
-                ]
-            ],
-            inputs=[url_input, html_json_input]
-        )
-
-    return interface
 
 def html_to_text(html_content: str) -> str:
     """
@@ -1138,7 +669,7 @@ def process_frontend_content(url_input, html_json_input):
         # 调用API获取第二类型的结果（不带占位符）
         try:
             response = requests.post(
-                "http://127.0.0.1:8321/extract",
+                "http://192.168.182.41:8321/extract",
                 json={
                     "html_content": html_content,
                     "url": url
@@ -1186,7 +717,7 @@ def process_frontend_content(url_input, html_json_input):
                 html_without_holder, md_without_holder, text_without_holder)
 
     except Exception as e:
-        return f"处理出错: {str(e)}", "", "", "", "", "", ""
+        return f"处理出错: {str(e)}", "", "", "", "", "", "",""
 
 def create_simple_gradio_interface():
     """
@@ -1256,13 +787,6 @@ def create_simple_gradio_interface():
             ]
         )
 
-        # 添加示例
-        gr.Examples([
-            [
-                "https://www.gov.cn/zhengce/202510/content_7046643.htm",
-                '{\n  "html_content": "<html><body><h1>标题</h1><img src=\\"test.jpg\\"/></body></html>",\n  "url": "https://www.gov.cn/zhengce/202510/content_7046643.htm"\n}'
-            ]
-        ], inputs=[url_input, html_input])
 
     return interface
 
@@ -1274,9 +798,3 @@ if __name__ == "__main__":
         server_port=7860,
         share=False
     )
-
-
-# 输出的文件有两个类型的，
-# 第一个类型是有占位符的：分别输出四个文件，有占位符的html，有占位符的md，文件和占位符的匹配关系文件，有占位符的纯文本。
-# 第二个类型的是无占位符的：分别输出三个文件，无占位符的html，无占位符的md，无占位符的纯文本。
-
