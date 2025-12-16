@@ -12,8 +12,8 @@ from bs4 import BeautifulSoup, Comment,Tag
 import logging
 import os
 from logging.handlers import RotatingFileHandler
+from typing import Tuple
 # import datetime
-# from typing import Tuple
 # 用于测试--------------------------------------------------------------------------
 # def setup_logging():
 #     """设置日志配置 - 输出到带时间戳的日志文件 + 控制台"""
@@ -392,10 +392,10 @@ def clean_html_content_advanced(html_content: str) -> str:
 
 def remove_invisible_tags(soup: BeautifulSoup):
     """清理干扰元素"""
-    for tag in soup(['script', 'style', 'noscript','iframe','svg', 'meta', 'link', 'input']):
+    for tag in soup(['script', 'style', 'noscript', 'iframe', 'svg', 'meta', 'link', 'input']):
         tag.decompose()
 
-    # TODO:等到之后有这个下载需求的时候，把下面的注释解开，然后上面的iframe去掉
+     # TODO:等到之后有这个下载需求的时候，把下面的注释解开，然后上面的iframe去掉
     # 单独处理iframe标签，保留包含视频或PDF的iframe
     # for tag in soup('iframe'):
     #     if tag.get('src'):
@@ -981,7 +981,7 @@ def check_content_before_cutoff_v2(soup: BeautifulSoup, cutoff_element: Tag, htm
     return False
 
  
-def split_header_and_content_v2(html_content: str) -> tuple[str, str]:
+def split_header_and_content_v2(html_content: str) -> Tuple[str, str]:
     """
     【表格基准向上扩散法 - 改进版】
     新的分割策略：
@@ -4064,7 +4064,6 @@ def is_interference_identifier(identifier):
             return True
     
     return False
-
 def clean_html_content_advanced_two(html_content: str) -> str:
    
     try:
@@ -4337,7 +4336,7 @@ def html_to_markdown_simple(html_content: str) -> str:
 
         markdown_content = converter.convert(html_content)
 
-        # 清理多余空行
+        # 清理多余空行：将任意连续空白行（含空格）压缩为单个空行
         markdown_content = clean_markdown_content(markdown_content)
 
         return markdown_content.strip()
