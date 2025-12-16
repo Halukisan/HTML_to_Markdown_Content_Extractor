@@ -67,18 +67,6 @@ class ProcessRequest(BaseModel):
         if len(v.encode('utf-8')) > CONFIG["max_html_size"]:
             raise ValueError(f'HTML内容大小不能超过 {CONFIG["max_html_size"] // (1024*1024)}MB')
 
-        # 基本的HTML注入检测
-        dangerous_patterns = [
-            r'<script[^>]*>.*?</script>',
-            r'javascript:',
-            r'on\w+\s*=',  # onclick, onload等事件处理器
-        ]
-
-        for pattern in dangerous_patterns:
-            if re.search(pattern, v, re.IGNORECASE | re.DOTALL):
-                logger.warning(f"检测到潜在的危险HTML模式: {pattern}")
-                # 不阻止处理，但记录警告
-
         return v
 
     @field_validator('url')
