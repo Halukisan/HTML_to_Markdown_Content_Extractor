@@ -12,8 +12,7 @@ from bs4 import BeautifulSoup, Comment,Tag
 import logging
 import os
 from logging.handlers import RotatingFileHandler
-import datetime
-from typing import Tuple
+# import datetime
 # 用于测试--------------------------------------------------------------------------
 # def setup_logging():
 #     """设置日志配置 - 输出到带时间戳的日志文件 + 控制台"""
@@ -392,20 +391,8 @@ def clean_html_content_advanced(html_content: str) -> str:
 
 def remove_invisible_tags(soup: BeautifulSoup):
     """清理干扰元素"""
-    for tag in soup(['script', 'style', 'noscript','iframe', 'svg', 'meta', 'link', 'input']):
+    for tag in soup(['script', 'style', 'noscript', 'iframe', 'svg', 'meta', 'link', 'input']):
         tag.decompose()
-
-    # TODO:等到之后有这个下载需求的时候，把下面的注释解开，然后上面的iframe去掉
-    # 单独处理iframe标签，保留包含视频或PDF的iframe
-    # for tag in soup('iframe'):
-    #     if tag.get('src'):
-    #         src = tag.get('src').lower()
-    #         if src.endswith(('.mp4', '.pdf')):
-    #             continue  
-    #     if tag.find('video'):
-    #         continue 
-    #     tag.decompose()
-
     for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
         comment.extract()
     for hidden in soup.find_all(attrs={"hidden": True}):
@@ -981,7 +968,7 @@ def check_content_before_cutoff_v2(soup: BeautifulSoup, cutoff_element: Tag, htm
     return False
 
  
-def split_header_and_content_v2(html_content: str) -> Tuple[str, str]:
+def split_header_and_content_v2(html_content: str) -> tuple[str, str]:
     """
     【表格基准向上扩散法 - 改进版】
     新的分割策略：
@@ -2201,9 +2188,9 @@ def clean_container_html(container_html: str) -> str:
             if img:
                 # 检查src属性是否包含base64
                 src = img.get('src', '')
-                if 'base64' in src.lower() or 'data:image' in src.lower():
+                if 'base64' in src.lower():
                     img.decompose()
-                    logger.info(f"删除包含base64或data:image的img标签")
+                    logger.info(f"删除包含base64的img标签")
 
         # 1. 查找所有有style属性的元素
         styled_elements = soup.find_all(attrs={"style": True})
@@ -4064,7 +4051,97 @@ def is_interference_identifier(identifier):
             return True
     
     return False
+def clean_html_content_advanced_two(html_content: str) -> str:
+   
+    try:
+        soup = BeautifulSoup(html_content, 'html.parser')
 
+         
+        for tag in soup.find_all(['script', 'style', 'meta', 'link', 'noscript']):
+            tag.decompose()
+
+        
+        tags_to_delete = [
+            "已阅","字号", "打印", "关闭", "收藏","分享到微信","分享","字体","小","中","大","s92及gd格式的文件请用SEP阅读工具",
+            "扫一扫在手机打开当前页", "扫一扫在手机上查看当前页面","用微信“扫一扫”","分享给您的微信好友",
+            "相关链接",'下载文字版','下载图片版','扫一扫在手机打开当前页面',"微信扫一扫：分享","上一篇","下一篇","【打印文章】","返回顶部","你的浏览器不支持video",
+            "当前位置：","首页","信息公开目录","索引号","发布时间：202"
+        ]
+
+        for tag_text in tags_to_delete:
+            delete_short_tags(soup, tag_text)
+
+        error_elements_to_delete = []
+
+        for element in soup.find_all(string=re.compile("我要纠错")):
+            #  elment  
+            if not hasattr(element, 'parent') or element.parent is None:
+                continue
+
+            parent = element.parent
+
+            #  parent 
+            if not hasattr(parent, 'get_text') or not hasattr(parent, 'decompose'):
+                continue
+
+            try:
+                if parent and len(parent.get_text(strip=True)) < 20:  # 
+                    error_elements_to_delete.append(parent)
+            except Exception:
+                # 
+                continue
+
+        # 
+        for parent in error_elements_to_delete:
+            try:
+                if parent and hasattr(parent, 'decompose'):
+                    parent.decompose()
+            except Exception:
+                pass
+
+        # 保留属性列表
+        essential_attributes = {
+            'div': [], 'p': [], 'span': [],
+            'table': ['border', 'cellpadding', 'cellspacing'],
+            'tr': [], 'td': ['colspan', 'rowspan'], 'th': ['colspan', 'rowspan'],
+            'ul': [], 'ol': [], 'li': [],
+            'a': ['href', 'target'],
+            'img': ['src'],
+            'video': ['src', 'poster', 'controls'],
+            'source': ['src'],
+            'iframe': ['src'],
+            'br': [], 'hr': []
+        }
+
+        def clean_attributes(tag):
+            if tag.name is None:
+                return
+
+            allowed_attrs = essential_attributes.get(tag.name, [])
+
+            #   
+            if tag.has_attr('style'):
+                del tag['style']
+
+            attrs_to_remove = [attr for attr in tag.attrs if attr not in allowed_attrs]
+            for attr in attrs_to_remove:
+                del tag[attr]
+
+        for tag in soup.find_all(True):
+            clean_attributes(tag)
+
+        # 
+        for table in soup.find_all('table'):
+            cleaned_table = clean_table_html(str(table))
+            table.replace_with(BeautifulSoup(cleaned_table, 'html.parser'))
+
+        # 
+        remove_empty_tags(soup)
+
+        return str(soup)
+
+    except Exception as e:
+        return html_content
 # 移除了验证函数，现在只需要核心的HTML处理
 
 
@@ -4124,7 +4201,23 @@ def progressResult(json_str: dict) -> dict:
             cl_content_md.strip() and
             len(cl_content_md) > 150
         )
+        if not extract_success:
+            logger.debug("提取失败，使用clean_html_content_advanced处理原始html_content")
+            cl_content_html = clean_html_content_advanced_two(html_contents)
 
+            # 复用现在的处理逻辑生成md和text
+            cl_content_md = html_to_markdown_simple(cl_content_html)
+
+            content_soup = BeautifulSoup(cl_content_html, 'html.parser')
+            cl_content_text = clean_text(content_soup.get_text())
+
+            # 重新判断提取是否成功
+            extract_success = bool(
+                cl_content_md.strip() and
+                len(cl_content_md) > 150
+            )
+
+            logger.debug(f"使用clean_html_content_advanced重新处理后的extract_success: {extract_success}")
         # 更新结果，现在包含header_content_text
         result.update({
             'header_content_text': header_content_text,  # 包含索引号、主题分类等的header内容
@@ -4230,7 +4323,7 @@ def html_to_markdown_simple(html_content: str) -> str:
 
         markdown_content = converter.convert(html_content)
 
-        # 清理多余空行
+        # 清理多余空行：将任意连续空白行（含空格）压缩为单个空行
         markdown_content = clean_markdown_content(markdown_content)
 
         return markdown_content.strip()
