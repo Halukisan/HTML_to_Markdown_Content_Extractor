@@ -112,7 +112,7 @@ chmod +x deploy.sh
 
 ---
 
-# 🌐 Nginx 负载均衡部署与调试指南
+#  Nginx 负载均衡部署与调试指南
 
 在单台服务器上部署多个后端服务（如 Gunicorn 应用），并通过 **Nginx 实现负载均衡**，具有以下优势：
 
@@ -121,7 +121,7 @@ chmod +x deploy.sh
 
 ---
 
-## 1️⃣ Nginx 配置文件设置
+##  Nginx 配置文件设置
 
 配置路径：`/etc/nginx/nginx.conf`
 
@@ -160,13 +160,13 @@ server {
 ```
 然后执行`/usr/local/nginx/sbin/nginx -t`,看是否输出successful，表明nginx.conf是没有问题的
 
-> ✅ **新增服务时**：只需在 `upstream` 块中追加一行 `server 127.0.0.1:<新端口>;` 即可。
+>  **新增服务时**：只需在 `upstream` 块中追加一行 `server 127.0.0.1:<新端口>;` 即可。
 
 ---
 
-## 2️⃣ 启动前准备：清理旧进程 & SELinux 配置
+##  启动前准备：清理旧进程 & SELinux 配置
 
-### 🔍 查找并终止占用端口的旧进程
+###  查找并终止占用端口的旧进程
 
 ```bash
 # 查看 80 或 8000 端口占用情况
@@ -179,9 +179,9 @@ kill -9 <PID>
 killall nginx
 ```
 
-### 🔒 解决 SELinux 权限问题
+###  解决 SELinux 权限问题
 
-#### ① 允许 Nginx 绑定 8000 端口（非标准 HTTP 端口）
+####  允许 Nginx 绑定 8000 端口（非标准 HTTP 端口）
 
 ```bash
 # 安装策略管理工具（若未安装）
@@ -191,18 +191,18 @@ yum install -y policycoreutils-python-utils
 semanage port -a -t http_port_t -p tcp 8000
 ```
 
-#### ② 允许 Nginx 连接上游后端（解决 502 Bad Gateway）
+####  允许 Nginx 连接上游后端（解决 502 Bad Gateway）
 
 ```bash
 # 允许 httpd（即 Nginx）发起网络连接
 setsebool -P httpd_can_network_connect 1
 ```
 
-> ⚠️ **注意**：务必先启动后端服务，再启动 Nginx！
+>  **注意**：务必先启动后端服务，再启动 Nginx！
 
 ---
 
-## 3️⃣ 启动服务流程
+##  启动服务流程
 
 ```bash
 # 1. 启动后端服务（例如通过 deploy.sh）
@@ -215,7 +215,7 @@ systemctl start nginx
 
 ---
 
-## 4️⃣ 验证负载均衡是否生效
+##  验证负载均衡是否生效
 
 ### 方法：观察日志轮询
 
@@ -232,11 +232,11 @@ for i in {1..6}; do
 done
 ```
 
-✅ **预期现象**：日志中交替出现来自 `8001` 和 `8002` 的访问记录，证明 **轮询（Round-Robin）负载均衡已生效**。
+ **预期现象**：日志中交替出现来自 `8001` 和 `8002` 的访问记录，证明 **轮询（Round-Robin）负载均衡已生效**。
 
 ---
 
-## 5️⃣ 接口功能验证
+##  接口功能验证
 
 测试全链路连通性：
 
@@ -250,15 +250,6 @@ curl -v http://127.0.0.1:8000/health
 
 ---
 
-## ✅ 总结
-
-| 步骤 | 操作 |
-|------|------|
-| 配置 | 修改 `/etc/nginx/nginx.conf`，定义 `upstream` |
-| 清理 | 杀掉旧进程，释放 8000 端口 |
-| SELinux | 添加端口权限 + 开启网络连接 |
-| 启动顺序 | 先后端 → 再 Nginx |
-| 验证 | 日志轮询 + 接口测试 |
 
 > 💡 提示：生产环境中建议配合 `systemd` 管理后端服务，并使用 `nginx -t` 测试配置语法后再重载。
 
