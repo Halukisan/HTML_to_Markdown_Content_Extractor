@@ -435,19 +435,49 @@ def clean_html_content_advanced(html_content: str) -> str:
 
 def remove_invisible_tags(soup: BeautifulSoup):
     """清理干扰元素"""
-    for tag in soup(['script', 'style', 'noscript', 'iframe', 'svg', 'meta', 'link', 'input']):
+    # 定义常见文件扩展名
+    file_extensions = {
+        # 文档类型
+        '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+        '.txt', '.csv',
+        # 图片类型
+        '.jpg', '.jpeg', '.png',
+        # 音频类型
+        '.mp3', '.wav', '.flac', '.aac', '.ogg', '.wma', '.m4a',
+        # 视频类型
+        '.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm', '.mkv', '.m4v',
+        # 压缩文件
+        '.zip', '.rar', '.7z', '.tar', '.gz', '.bz2',
+        # 其他文件
+        '.exe', '.msi', '.dmg', '.pkg', '.apk', '.ipa'
+    }
+    file_exts_lower = {ext.lower() for ext in file_extensions}
+
+    for tag in soup(['script', 'style', 'noscript','svg', 'meta', 'link', 'input']):
         tag.decompose()
 
-     # TODO:等到之后有这个下载需求的时候，把下面的注释解开，然后上面的iframe去掉
-    # 单独处理iframe标签，保留包含视频或PDF的iframe
-    # for tag in soup('iframe'):
-    #     if tag.get('src'):
-    #         src = tag.get('src').lower()
-    #         if src.endswith(('.mp4', '.pdf')):
-    #             continue  
-    #     if tag.find('video'):
-    #         continue 
-    #     tag.decompose()
+    # 单独处理iframe标签，保留包含各种类型文件的iframe
+    for tag in soup('iframe'):
+        should_keep = False
+
+        # 检查src属性中是否包含文件链接
+        if tag.get('src'):
+            src = tag.get('src').lower()
+            if any(src.endswith(ext) for ext in file_exts_lower):
+                should_keep = True
+                logger.debug(f"保留包含文件的iframe: {src[:100]}...")
+
+        # 检查iframe内容中是否包含文件链接
+        if not should_keep:
+            iframe_content = tag.get_text() + str(tag)
+            iframe_content_lower = iframe_content.lower()
+            if any(ext in iframe_content_lower for ext in file_exts_lower):
+                should_keep = True
+                logger.debug(f"保留内容包含文件的iframe")
+
+        # 如果不应该保留，则删除
+        if not should_keep:
+            tag.decompose()
 
     for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
         comment.extract()
