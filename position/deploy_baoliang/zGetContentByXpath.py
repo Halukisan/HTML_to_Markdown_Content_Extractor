@@ -132,82 +132,97 @@ class CustomMarkdownConverter(MarkdownConverter):
 def delete_short_tags(soup: BeautifulSoup, tag_text: str) -> None:
     """
     删除包含指定文本的短标签（前后不是长文字的情况）
-    类似Java的deleteShortTag功能
+    但保留包含附件链接（如 .pdf, .docx 等）的标签
     """
-    # 查找所有包含指定文本的节点
-    # 先收集所有要删除的元素，避免在迭代过程中修改DOM结构
     elements_to_delete = []
+    file_extensions = {'.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.zip', '.rar', '.txt', '.csv'}
+    # 转为小写集合，便于快速匹配
+    file_exts_lower = {ext.lower() for ext in file_extensions}
+
+    # 预编译正则（可选）
+    url_pattern = re.compile(r'\b(?:https?://|www\.)[^\s<>"]+', re.IGNORECASE)
 
     for element in soup.find_all(string=re.compile(re.escape(tag_text))):
-        # 安全检查1：确保 element 是 NavigableString 且有 parent
         if not hasattr(element, 'parent') or element.parent is None:
             continue
 
         parent = element.parent
-
-        # 安全检查2：确保 parent 仍在DOM树中（未被删除）
         if not hasattr(parent, 'decompose'):
             continue
 
-        # 获取父标签的文本内容
         try:
             parent_text = parent.get_text(strip=True)
         except Exception:
-            continue  # 如果获取文本失败，跳过
+            continue
 
-        # 检查前后是否是长文字
-        # 如果整个父标签文本很短（小于50个字符），认为可以删除
-        if len(parent_text) < 50:
-            # print(f"---------------parent_text::{parent_text}")
-            # 检查是否匹配确切的目标文本
-            if tag_text in parent_text:
-                # 进一步检查，确保不是正文中的内容
-                # 如果父标签是span、div等容器标签，且文本很短，很可能是导航或功能按钮
-                # 检查是否包含附件链接（如.pdf、.doc、.xls等文件）
-                has_attachment = False
-                # 检查文本中是否包含URL和文件扩展名
-                # 匹配URL模式，特别是包含文件扩展名的
-                url_pattern = r'\bhttps?://[^\s<>"]+|\bwww\.[^\s<>"]+'
-                file_extensions = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.zip', '.rar', '.txt', '.csv']
+        # 检查是否存在附件（优先级最高）
+        has_attachment = False
 
-                # 查找所有URL
-                urls = re.findall(url_pattern, parent_text, re.IGNORECASE)
-                for url in urls:
-                    # 检查URL是否包含文件扩展名
-                    for ext in file_extensions:
-                        if ext.lower() in url.lower():
-                            has_attachment = True
-                            break
-                    if has_attachment:
-                        break
+        # 检查所有 <a href="..."> 链接
+        # 检查所有 <a href="..."> 链接
+        # print(f"------{parent}")
 
-                # 检查父标签内是否有链接标签包含文件扩展名
-                if not has_attachment and parent.find_all('a', href=True):
-                    for link in parent.find_all('a', href=True):
-                        href = link.get('href', '')
-                        for ext in file_extensions:
-                            if ext.lower() in href.lower():
-                                has_attachment = True
-                                break
-                        if has_attachment:
-                            break
+        # 检查 parent 本身是否就是链接
+        if parent.name == 'a' and parent.has_attr('href'):
+            href = parent.get('href', '').strip()
+            if href:
+                href_lower = href.lower()
+                if any(ext in href_lower for ext in file_exts_lower):
+                    # print(f"发现parent本身的附件链接: {href}")
+                    has_attachment = True
 
-                if parent.name in ['span', 'div', 'a', 'button', 'p','dt','li','h4','font'] and not any(
-                    keyword in parent_text.lower()
-                    for keyword in ['文章', '内容', '正文', '详情', '更多信息']
-                ) and not has_attachment:
-                    # print("-----------------")
-                    elements_to_delete.append(parent)
+        # 如果 parent 本身不是附件链接，再检查内部嵌套的链接
+        if not has_attachment:
+            for link in parent.find_all('a', href=True):
+                href = link.get('href', '').strip()
+                if not href:
+                    continue
+                href_lower = href.lower()
+                # 检查是否包含文件扩展名
+                if any(ext in href_lower for ext in file_exts_lower):
+                    # print(f"发现链接中的附件: {href}")
+                    has_attachment = True
+                    break
 
-    # 安全删除：在收集完成后统一删除
-    for parent in elements_to_delete:
+        # 也检查纯文本中是否包含显式的 URL（如直接写 https://xxx.pdf）
+        if not has_attachment:
+            for url in url_pattern.findall(parent_text):
+                url_lower = url.lower()
+                if any(ext in url_lower for ext in file_exts_lower):
+                    # print(f"发现文本中的附件URL: {url}")
+                    has_attachment = True
+                    break
+
+        # 只有无附件时，才考虑是否删除 
+        if has_attachment:
+            continue  # 有附件，坚决不删
+
+        # 检查是否包含目标文本（注意：必须包含）
+        if tag_text not in parent_text:
+            continue
+
+        # 检查长度
+        if len(parent_text) >= 50:
+            continue
+
+        # 排除正文关键词
+        lower_text = parent_text.lower()
+        forbidden_keywords = {'文章', '内容', '正文', '详情', '更多信息', '附件', '.pdf', '中心'}
+        if any(kw in lower_text for kw in forbidden_keywords):
+            continue
+
+        # 允许删除的标签类型
+        if parent.name in {'span', 'div', 'a', 'button', 'p', 'dt', 'li', 'h4', 'font'}:
+            # print(f"删除短标签: {parent_text}")
+            elements_to_delete.append(parent)
+
+    # 安全删除
+    for elem in elements_to_delete:
         try:
-            if parent and hasattr(parent, 'decompose'):
-                parent.decompose()
-        except Exception:
-            # 如果删除失败，静默跳过
-            logger.warning("delete_short_tags安全删除失败了")
-            pass
+            if elem and hasattr(elem, 'decompose'):
+                elem.decompose()
+        except Exception as e:
+            logger.warning(f"delete_short_tags 删除失败: {e}")
 
 def clean_table_html(table_html: str) -> str:
     """
