@@ -164,10 +164,39 @@ def delete_short_tags(soup: BeautifulSoup, tag_text: str) -> None:
             if tag_text in parent_text:
                 # 进一步检查，确保不是正文中的内容
                 # 如果父标签是span、div等容器标签，且文本很短，很可能是导航或功能按钮
+                # 检查是否包含附件链接（如.pdf、.doc、.xls等文件）
+                has_attachment = False
+                # 检查文本中是否包含URL和文件扩展名
+                # 匹配URL模式，特别是包含文件扩展名的
+                url_pattern = r'\bhttps?://[^\s<>"]+|\bwww\.[^\s<>"]+'
+                file_extensions = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.zip', '.rar', '.txt', '.csv']
+
+                # 查找所有URL
+                urls = re.findall(url_pattern, parent_text, re.IGNORECASE)
+                for url in urls:
+                    # 检查URL是否包含文件扩展名
+                    for ext in file_extensions:
+                        if ext.lower() in url.lower():
+                            has_attachment = True
+                            break
+                    if has_attachment:
+                        break
+
+                # 检查父标签内是否有链接标签包含文件扩展名
+                if not has_attachment and parent.find_all('a', href=True):
+                    for link in parent.find_all('a', href=True):
+                        href = link.get('href', '')
+                        for ext in file_extensions:
+                            if ext.lower() in href.lower():
+                                has_attachment = True
+                                break
+                        if has_attachment:
+                            break
+
                 if parent.name in ['span', 'div', 'a', 'button', 'p','dt','li','h4','font'] and not any(
                     keyword in parent_text.lower()
                     for keyword in ['文章', '内容', '正文', '详情', '更多信息']
-                ):
+                ) and not has_attachment:
                     # print("-----------------")
                     elements_to_delete.append(parent)
 
@@ -180,7 +209,6 @@ def delete_short_tags(soup: BeautifulSoup, tag_text: str) -> None:
             # 如果删除失败，静默跳过
             logger.warning("delete_short_tags安全删除失败了")
             pass
-
 def clean_table_html(table_html: str) -> str:
     """
     清理表格HTML：保留结构，移除无用的布局样式
