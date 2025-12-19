@@ -465,17 +465,21 @@ class URLPlaceholderReplacer:
         return False
 
 
-    def _generate_placeholder(self, url: str, element_type: str = "") -> str:
+    def _generate_placeholder(self, url: str) -> str:
         """
         相同语义的 URL（即使参数顺序不同）会生成相同占位符。
+        使用更长的哈希值以减少冲突可能性
         """
         normalized_url = normalize_url(url)
-        
-        url_md5 = hashlib.md5(normalized_url.encode('utf-8')).hexdigest()
-        placeholder = url_md5[:24]
-        
+
+        url_hash = hashlib.sha256(normalized_url.encode('utf-8')).hexdigest()
+
+        # 使用前32位作为占位符，降低冲突概率
+        md5content = url_hash[:32]
+        prefix = url_hash[:3]
+        placeholder = f"{prefix}/{md5content}"
         self.placeholder_mapping[placeholder] = url
-        
+
         return placeholder
     def replace_urls_with_placeholders(self, html_content: str, base_url: str = "") -> str:
         """
@@ -498,7 +502,7 @@ class URLPlaceholderReplacer:
             src = video.get('src')
             if src and self.is_media_url(src):
                 full_src = process_url(src)
-                placeholder = self._generate_placeholder(full_src, "video")
+                placeholder = self._generate_placeholder(full_src)
                 self.placeholder_mapping[placeholder] = full_src
                 video['src'] = f"{{{{{placeholder}}}}}"
 
@@ -506,7 +510,7 @@ class URLPlaceholderReplacer:
             poster = video.get('poster')
             if poster and self.is_media_url(poster):
                 full_poster = process_url(poster)
-                placeholder = self._generate_placeholder(full_poster, "image")
+                placeholder = self._generate_placeholder(full_poster)
                 self.placeholder_mapping[placeholder] = full_poster
                 video['poster'] = f"{{{{{placeholder}}}}}"
 
@@ -515,7 +519,7 @@ class URLPlaceholderReplacer:
             src = source.get('src')
             if src and self.is_media_url(src):
                 full_src = process_url(src)
-                placeholder = self._generate_placeholder(full_src, "video")
+                placeholder = self._generate_placeholder(full_src)
                 self.placeholder_mapping[placeholder] = full_src
                 source['src'] = f"{{{{{placeholder}}}}}"
 
@@ -524,7 +528,7 @@ class URLPlaceholderReplacer:
             src = audio.get('src')
             if src and self.is_media_url(src):
                 full_src = process_url(src)
-                placeholder = self._generate_placeholder(full_src, "audio")
+                placeholder = self._generate_placeholder(full_src)
                 self.placeholder_mapping[placeholder] = full_src
                 audio['src'] = f"{{{{{placeholder}}}}}"
 
@@ -533,7 +537,7 @@ class URLPlaceholderReplacer:
             src = iframe.get('src')
             if src and ('player' in src.lower() or 'video' in src.lower() or 'audio' in src.lower()):
                 full_src = process_url(src)
-                placeholder = self._generate_placeholder(full_src, "embed")
+                placeholder = self._generate_placeholder(full_src)
                 self.placeholder_mapping[placeholder] = full_src
                 iframe['src'] = f"{{{{{placeholder}}}}}"
 
@@ -542,7 +546,7 @@ class URLPlaceholderReplacer:
             src = img.get('src')
             if src and self.is_media_url(src):
                 full_src = process_url(src)
-                placeholder = self._generate_placeholder(full_src, "image")
+                placeholder = self._generate_placeholder(full_src)
                 self.placeholder_mapping[placeholder] = full_src
                 img['src'] = f"{{{{{placeholder}}}}}"
 
@@ -551,7 +555,7 @@ class URLPlaceholderReplacer:
             href = a.get('href')
             if href and self.is_media_url(href):
                 full_href = process_url(href)
-                placeholder = self._generate_placeholder(full_href, "file")
+                placeholder = self._generate_placeholder(full_href)
                 self.placeholder_mapping[placeholder] = full_href
                 a['href'] = f"{{{{{placeholder}}}}}"
 
@@ -592,68 +596,32 @@ def process_base_url(url):
 
 def html_to_text(html_content: str) -> str:
     """
-    将HTML转换为纯文本，保留占位符
+    将HTML转换为纯文本
+    优化内存使用和处理性能
     """
-    import re
-    
-    # 1. 在清理HTML之前，先提取所有占位符
-    placeholder_pattern = re.compile(r'\{\{[^{}]+\}\}')
-    placeholders = placeholder_pattern.findall(html_content)
-    
-    # 2. 将占位符替换为临时标记，避免在HTML解析过程中被破坏
-    temp_markers = []
-    processed_html = html_content  # 使用新变量，避免修改原始引用
-    
-    for i, placeholder in enumerate(placeholders):
-        temp_marker = f"__PLACEHOLDER_{i}__"
-        temp_markers.append((temp_marker, placeholder))
-        processed_html = processed_html.replace(placeholder, temp_marker, 1)
-    
-    
-    # 3. 使用处理后的HTML创建BeautifulSoup对象
-    soup = BeautifulSoup(processed_html, 'html.parser')
-    
-    # 4. 移除script和style标签
-    for script in soup(["script", "style"]):
-        script.decompose()
-    
-    # 5. 处理标签属性中的占位符
-    # 遍历所有标签，检查属性值中是否包含占位符（现在已经被替换为临时标记）
-    tags_with_placeholders = soup.find_all(lambda tag: any(
-        temp_marker in str(tag.attrs.get(attr, '')) 
-        for attr in tag.attrs 
-        for temp_marker, _ in temp_markers
-    ))
-    
-    
-    # 6. 对于包含占位符的标签，在标签后添加占位符文本
-    for tag in tags_with_placeholders:
-        for attr_name, attr_value in tag.attrs.items():
-            if isinstance(attr_value, str):
-                for temp_marker, original_placeholder in temp_markers:
-                    if temp_marker in attr_value:
-                        # 在标签后添加占位符作为文本节点
-                        placeholder_text = f" {original_placeholder}"
-                        new_text = soup.new_string(placeholder_text)
-                        tag.insert_after(new_text)
-                        break
-    
-    # 7. 获取文本内容
-    text = soup.get_text()
-    
-    # 8. 清理多余的空白字符
-    lines = (line.strip() for line in text.splitlines())
-    chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-    text = '\n'.join(chunk for chunk in chunks if chunk)
-    
-    
-    # 9. 恢复占位符（如果还有没处理的临时标记）
-    for temp_marker, original_placeholder in temp_markers:
-        if temp_marker in text:
-            text = text.replace(temp_marker, original_placeholder)
-            print(f"恢复占位符: {temp_marker} -> {original_placeholder}")
-    
-    return text
+    try:
+        # 使用BeautifulSoup解析HTML并移除不需要的标签
+        soup = BeautifulSoup(html_content, 'html.parser')
+
+        # 移除script和style标签
+        for script in soup(["script", "style"]):
+            script.decompose()
+
+        # 获取文本内容
+        text = soup.get_text()
+
+        # 清理多余的空白字符
+        # 移除每行前后的空白
+        lines = (line.strip() for line in text.splitlines())
+        # 移除多余空格
+        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+        # 过滤空行并合并
+        return '\n'.join(chunk for chunk in chunks if chunk)
+
+    except Exception as e:
+        logger.error(f"HTML转文本时出错: {str(e)}")
+        # 返回原始HTML的安全版本
+        return re.sub(r'<[^>]+>', '', html_content)
 
 def process_frontend_content(url_input, html_json_input):
     """
@@ -669,7 +637,7 @@ def process_frontend_content(url_input, html_json_input):
         # 调用API获取第二类型的结果（不带占位符）
         try:
             response = requests.post(
-                "http://192.168.182.41:8321/extract",
+                "http://192.168.182.41:8000/extract",
                 json={
                     "html_content": html_content,
                     "url": url
