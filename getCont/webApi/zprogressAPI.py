@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 # 配置常量
 CONFIG = {
-    "extract_api_url": os.getenv("EXTRACT_API_URL", "http://192.168.182.41:8000/extract"),
+    "extract_api_url": os.getenv("EXTRACT_API_URL", "http://172.26.16.12:8000/extract"),
     "max_html_size": int(os.getenv("MAX_HTML_SIZE", 10 * 1024 * 1024)),  # 10MB
     "request_timeout": int(os.getenv("REQUEST_TIMEOUT", 30)),  # 30秒
     "allowed_origins": os.getenv("ALLOWED_ORIGINS", "*").split(",") if os.getenv("ALLOWED_ORIGINS") else ["*"],
@@ -87,9 +87,16 @@ class ProcessResponse(BaseModel):
     placeholder_text: str = ""
     placeholder_mapping: str = ""
     # 不带占位符的结果
-    html: str = ""
-    markdown: str = ""
-    text: str = ""
+    cl_content_html: str = ""
+    cl_content_md: str = ""
+    cl_content_text: str = ""
+    # 从extract API获取的其他字段
+    html_content: str = ""
+    markdown_content: str = ""
+    xpath: str = ""
+    process_time: float = 0.0
+    header_content_text: str = ""
+    extract_success: bool = False
 
 class CustomMarkdownConverter(MarkdownConverter):
 
@@ -275,31 +282,19 @@ class URLPlaceholderReplacer:
 
         return False
 
-    def _generate_placeholder(self, url: str, element_type: str = "") -> str:
+    def _generate_placeholder(self, url: str) -> str:
         """
         相同语义的 URL（即使参数顺序不同）会生成相同占位符。
         使用更长的哈希值以减少冲突可能性
         """
         normalized_url = normalize_url(url)
 
-        # 使用SHA256生成更安全的哈希值，并添加时间戳和随机数以避免冲突
-        import time
-        import random
-
-        # 结合URL、元素类型、时间戳和随机数生成唯一占位符
-        hash_input = f"{normalized_url}_{element_type}_{time.time()}_{random.randint(0, 999999)}"
-        url_hash = hashlib.sha256(hash_input.encode('utf-8')).hexdigest()
+        url_hash = hashlib.sha256(normalized_url.encode('utf-8')).hexdigest()
 
         # 使用前32位作为占位符，降低冲突概率
-        placeholder = url_hash[:32]
-
-        # 如果仍然发生冲突（极小概率），添加后缀
-        original_placeholder = placeholder
-        counter = 1
-        while placeholder in self.placeholder_mapping:
-            placeholder = f"{original_placeholder}_{counter}"
-            counter += 1
-
+        md5content = url_hash[:32]
+        prefix = url_hash[:3]
+        placeholder = f"{prefix}/{md5content}"
         self.placeholder_mapping[placeholder] = url
 
         return placeholder
@@ -326,7 +321,7 @@ class URLPlaceholderReplacer:
             src = video.get('src')
             if src and self.is_media_url(src):
                 full_src = process_url(src)
-                placeholder = self._generate_placeholder(full_src, "video")
+                placeholder = self._generate_placeholder(full_src)
                 self.placeholder_mapping[placeholder] = full_src
                 video['src'] = f"{{{{{placeholder}}}}}"
 
@@ -334,7 +329,7 @@ class URLPlaceholderReplacer:
             poster = video.get('poster')
             if poster and self.is_media_url(poster):
                 full_poster = process_url(poster)
-                placeholder = self._generate_placeholder(full_poster, "image")
+                placeholder = self._generate_placeholder(full_poster)
                 self.placeholder_mapping[placeholder] = full_poster
                 video['poster'] = f"{{{{{placeholder}}}}}"
 
@@ -343,7 +338,7 @@ class URLPlaceholderReplacer:
             src = source.get('src')
             if src and self.is_media_url(src):
                 full_src = process_url(src)
-                placeholder = self._generate_placeholder(full_src, "video")
+                placeholder = self._generate_placeholder(full_src)
                 self.placeholder_mapping[placeholder] = full_src
                 source['src'] = f"{{{{{placeholder}}}}}"
 
@@ -352,7 +347,7 @@ class URLPlaceholderReplacer:
             src = audio.get('src')
             if src and self.is_media_url(src):
                 full_src = process_url(src)
-                placeholder = self._generate_placeholder(full_src, "audio")
+                placeholder = self._generate_placeholder(full_src)
                 self.placeholder_mapping[placeholder] = full_src
                 audio['src'] = f"{{{{{placeholder}}}}}"
 
@@ -361,7 +356,7 @@ class URLPlaceholderReplacer:
             src = iframe.get('src')
             if src and ('player' in src.lower() or 'video' in src.lower() or 'audio' in src.lower()):
                 full_src = process_url(src)
-                placeholder = self._generate_placeholder(full_src, "embed")
+                placeholder = self._generate_placeholder(full_src)
                 self.placeholder_mapping[placeholder] = full_src
                 iframe['src'] = f"{{{{{placeholder}}}}}"
 
@@ -370,16 +365,18 @@ class URLPlaceholderReplacer:
             src = img.get('src')
             if src and self.is_media_url(src):
                 full_src = process_url(src)
-                placeholder = self._generate_placeholder(full_src, "image")
+                placeholder = self._generate_placeholder(full_src)
                 self.placeholder_mapping[placeholder] = full_src
                 img['src'] = f"{{{{{placeholder}}}}}"
 
         # 处理a标签（下载链接）
         for a in soup.find_all('a'):
             href = a.get('href')
+            print(href)
             if href and self.is_media_url(href):
+                print(f"---{href}")
                 full_href = process_url(href)
-                placeholder = self._generate_placeholder(full_href, "file")
+                placeholder = self._generate_placeholder(full_href)
                 self.placeholder_mapping[placeholder] = full_href
                 a['href'] = f"{{{{{placeholder}}}}}"
 
@@ -400,9 +397,15 @@ def process_content(url_input: str, html_input: str) -> ProcessResponse:
                 placeholder_markdown="",
                 placeholder_text="",
                 placeholder_mapping="",
-                html="",
-                markdown="",
-                text=""
+                cl_content_html="",
+                cl_content_md="",
+                cl_content_text="",
+                html_content="",
+                markdown_content="",
+                xpath="",
+                process_time=0.0,
+                header_content_text="",
+                extract_success=False
             )
 
         # 处理base_url
@@ -447,9 +450,15 @@ def process_content(url_input: str, html_input: str) -> ProcessResponse:
                     placeholder_markdown="",
                     placeholder_text="",
                     placeholder_mapping="",
-                    html="",
-                    markdown="",
-                    text=""
+                    cl_content_html="",
+                    cl_content_md="",
+                    cl_content_text="",
+                    html_content="",
+                    markdown_content="",
+                    xpath="",
+                    process_time=0.0,
+                    header_content_text="",
+                    extract_success=False
                 )
 
             # 验证响应内容
@@ -463,15 +472,29 @@ def process_content(url_input: str, html_input: str) -> ProcessResponse:
                     placeholder_markdown="",
                     placeholder_text="",
                     placeholder_mapping="",
-                    html="",
-                    markdown="",
-                    text=""
+                    cl_content_html="",
+                    cl_content_md="",
+                    cl_content_text="",
+                    html_content="",
+                    markdown_content="",
+                    xpath="",
+                    process_time=0.0,
+                    header_content_text="",
+                    extract_success=False
                 )
 
             # 不带占位符的结果
             html_without_holder = result.get("cl_content_html", "")
             md_without_holder = result.get("cl_content_md", "")
             text_without_holder = result.get("cl_content_text", "")
+
+            # 从extract API获取的其他字段
+            html_content = result.get("html_content", "")
+            markdown_content = result.get("markdown_content", "")
+            xpath = result.get("xpath", "")
+            process_time = result.get("process_time", 0.0)
+            header_content_text = result.get("header_content_text", "")
+            extract_success = result.get("extract_success", False)
 
             if not html_without_holder and not md_without_holder:
                 logger.warning("API返回的内容为空")
@@ -485,9 +508,15 @@ def process_content(url_input: str, html_input: str) -> ProcessResponse:
                 placeholder_markdown="",
                 placeholder_text="",
                 placeholder_mapping="",
-                html="",
-                markdown="",
-                text=""
+                cl_content_html="",
+                cl_content_md="",
+                cl_content_text="",
+                html_content="",
+                markdown_content="",
+                xpath="",
+                process_time=0.0,
+                header_content_text="",
+                extract_success=False
             )
         except requests.exceptions.ConnectionError:
             error_msg = f"无法连接到API服务器: {CONFIG['extract_api_url']}"
@@ -498,9 +527,15 @@ def process_content(url_input: str, html_input: str) -> ProcessResponse:
                 placeholder_markdown="",
                 placeholder_text="",
                 placeholder_mapping="",
-                html="",
-                markdown="",
-                text=""
+                cl_content_html="",
+                cl_content_md="",
+                cl_content_text="",
+                html_content="",
+                markdown_content="",
+                xpath="",
+                process_time=0.0,
+                header_content_text="",
+                extract_success=False
             )
         except requests.exceptions.RequestException as e:
             logger.error(f"API调用出错: {str(e)}")
@@ -532,8 +567,9 @@ def process_content(url_input: str, html_input: str) -> ProcessResponse:
         # 生成带占位符的纯文本
         text_with_placeholders = html_to_text(html_with_placeholders)
 
-        # 生成占位符映射关系
-        placeholder_mapping = json.dumps(replacer.placeholder_mapping, ensure_ascii=False, indent=2)
+        # 生成占位符映射关系（转为json数组格式）
+        placeholder_mapping_list = [{"placeholder": k, "original_url": v} for k, v in replacer.placeholder_mapping.items()]
+        placeholder_mapping = json.dumps(placeholder_mapping_list, ensure_ascii=False, indent=2)
 
         return ProcessResponse(
             status="处理成功",
@@ -541,9 +577,15 @@ def process_content(url_input: str, html_input: str) -> ProcessResponse:
             placeholder_markdown=md_with_placeholders,
             placeholder_text=text_with_placeholders,
             placeholder_mapping=placeholder_mapping,
-            html=html_without_holder,
-            markdown=md_without_holder,
-            text=text_without_holder
+            cl_content_html=html_without_holder,
+            cl_content_md=md_without_holder,
+            cl_content_text=text_without_holder,
+            html_content=html_content,
+            markdown_content=markdown_content,
+            xpath=xpath,
+            process_time=process_time,
+            header_content_text=header_content_text,
+            extract_success=extract_success
         )
 
     except Exception as e:
@@ -554,9 +596,15 @@ def process_content(url_input: str, html_input: str) -> ProcessResponse:
             placeholder_markdown="",
             placeholder_text="",
             placeholder_mapping="",
-            html="",
-            markdown="",
-            text=""
+            cl_content_html="",
+            cl_content_md="",
+            cl_content_text="",
+            html_content="",
+            markdown_content="",
+            xpath="",
+            process_time=0.0,
+            header_content_text="",
+            extract_success=False
         )
 
 def process_base_url(url):
@@ -589,73 +637,27 @@ def process_base_url(url):
 
 def html_to_text(html_content: str) -> str:
     """
-    将HTML转换为纯文本，保留占位符
+    将HTML转换为纯文本
     优化内存使用和处理性能
     """
     try:
-        # 1. 在清理HTML之前，先提取所有占位符
-        placeholder_pattern = re.compile(r'\{\{[^{}]+\}\}')
-        placeholders = placeholder_pattern.findall(html_content)
+        # 使用BeautifulSoup解析HTML并移除不需要的标签
+        soup = BeautifulSoup(html_content, 'html.parser')
 
-        # 如果没有占位符，直接处理
-        if not placeholders:
-            soup = BeautifulSoup(html_content, 'html.parser')
-            for script in soup(["script", "style"]):
-                script.decompose()
-            text = soup.get_text()
-            lines = (line.strip() for line in text.splitlines())
-            chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-            return '\n'.join(chunk for chunk in chunks if chunk)
-
-        # 2. 将占位符替换为临时标记，避免在HTML解析过程中被破坏
-        temp_markers = []
-        processed_html = html_content
-
-        # 使用更高效的替换方法
-        for i, placeholder in enumerate(placeholders):
-            temp_marker = f"__PLACEHOLDER_{i}__"
-            temp_markers.append((temp_marker, placeholder))
-            # 只替换第一个匹配项，避免重复替换
-            processed_html = processed_html.replace(placeholder, temp_marker, 1)
-
-        # 3. 使用处理后的HTML创建BeautifulSoup对象
-        soup = BeautifulSoup(processed_html, 'html.parser')
-
-        # 4. 移除script和style标签
+        # 移除script和style标签
         for script in soup(["script", "style"]):
             script.decompose()
 
-        # 5. 高效处理标签属性中的占位符
-        # 创建临时标记到原始占位符的映射
-        temp_marker_map = {temp_marker: placeholder for temp_marker, placeholder in temp_markers}
-
-        # 遍历所有可能包含占位符的标签
-        for tag in soup.find_all(['img', 'video', 'audio', 'source', 'iframe', 'a']):
-            for attr_name, attr_value in tag.attrs.items():
-                if isinstance(attr_value, str):
-                    for temp_marker, original_placeholder in temp_markers:
-                        if temp_marker in attr_value:
-                            # 在标签后添加占位符作为文本节点
-                            placeholder_text = f" {original_placeholder}"
-                            new_text = soup.new_string(placeholder_text)
-                            tag.insert_after(new_text)
-                            break
-
-        # 6. 获取文本内容
+        # 获取文本内容
         text = soup.get_text()
 
-        # 7. 清理多余的空白字符，使用更高效的方法
-        text = re.sub(r'\s+', ' ', text).strip()
-        text = '\n'.join([line.strip() for line in text.split('\n') if line.strip()])
-
-        # 8. 恢复占位符
-        for temp_marker, original_placeholder in temp_markers:
-            if temp_marker in text:
-                text = text.replace(temp_marker, original_placeholder)
-                if CONFIG["debug_mode"]:
-                    logger.debug(f"恢复占位符: {temp_marker} -> {original_placeholder}")
-
-        return text
+        # 清理多余的空白字符
+        # 移除每行前后的空白
+        lines = (line.strip() for line in text.splitlines())
+        # 移除多余空格
+        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+        # 过滤空行并合并
+        return '\n'.join(chunk for chunk in chunks if chunk)
 
     except Exception as e:
         logger.error(f"HTML转文本时出错: {str(e)}")
@@ -675,9 +677,15 @@ async def value_error_handler(request: Request, exc: ValueError):
             "placeholder_markdown": "",
             "placeholder_text": "",
             "placeholder_mapping": "",
-            "html": "",
-            "markdown": "",
-            "text": ""
+            "cl_content_html": "",
+            "cl_content_md": "",
+            "cl_content_text": "",
+            "html_content": "",
+            "markdown_content": "",
+            "xpath": "",
+            "process_time": 0.0,
+            "header_content_text": "",
+            "extract_success": False
         }
     )
 
@@ -693,9 +701,15 @@ async def general_exception_handler(request: Request, exc: Exception):
             "placeholder_markdown": "",
             "placeholder_text": "",
             "placeholder_mapping": "",
-            "html": "",
-            "markdown": "",
-            "text": ""
+            "cl_content_html": "",
+            "cl_content_md": "",
+            "cl_content_text": "",
+            "html_content": "",
+            "markdown_content": "",
+            "xpath": "",
+            "process_time": 0.0,
+            "header_content_text": "",
+            "extract_success": False
         }
     )
 
