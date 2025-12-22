@@ -301,7 +301,7 @@ def remove_empty_tags(soup: BeautifulSoup) -> None:
     保留一些有意义的空标签，如br、hr、img等
     """
     # 定义需要保留的空标签（即使它们没有内容）
-    tags_to_keep_empty = {'br', 'hr', 'img', 'input', 'embed', 'area', 'base', 'col', 'frame', 'link', 'meta', 'param', 'source', 'track', 'wbr'}
+    tags_to_keep_empty = {'br', 'hr', 'img', 'input', 'embed', 'area', 'base', 'col', 'frame', 'link', 'meta', 'param', 'source', 'track', 'wbr','video'}
 
     # 递归清理空标签
     changed = True
