@@ -14,7 +14,6 @@ import os
 from logging.handlers import RotatingFileHandler
 from typing import Tuple
 # import datetime
-# from typing import Tuple
 # 用于测试--------------------------------------------------------------------------
 # def setup_logging():
 #     """设置日志配置 - 输出到带时间戳的日志文件 + 控制台"""
@@ -137,7 +136,7 @@ def delete_short_tags(soup: BeautifulSoup, tag_text: str) -> None:
     但保留包含附件链接（如 .pdf, .docx 等）的标签
     """
     elements_to_delete = []
-    file_extensions = {'.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.zip', '.rar', '.txt', '.csv'}
+    file_extensions = {'.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.zip', '.rar', '.txt', '.csv','.mp4'}
     # 转为小写集合，便于快速匹配
     file_exts_lower = {ext.lower() for ext in file_extensions}
 
@@ -173,6 +172,7 @@ def delete_short_tags(soup: BeautifulSoup, tag_text: str) -> None:
                     # print(f"发现parent本身的附件链接: {href}")
                     has_attachment = True
 
+        
         # 如果 parent 本身不是附件链接，再检查内部嵌套的链接
         if not has_attachment:
             for link in parent.find_all('a', href=True):
@@ -225,7 +225,6 @@ def delete_short_tags(soup: BeautifulSoup, tag_text: str) -> None:
                 elem.decompose()
         except Exception as e:
             logger.warning(f"delete_short_tags 删除失败: {e}")
-
 def clean_table_html(table_html: str) -> str:
     """
     清理表格HTML：保留结构，移除无用的布局样式
@@ -351,7 +350,7 @@ def clean_html_content_advanced(html_content: str) -> str:
             "已阅","字号", "打印", "关闭", "收藏","分享到微信","分享","字体","小","中","大","s92及gd格式的文件请用SEP阅读工具",
             "扫一扫在手机打开当前页", "扫一扫在手机上查看当前页面","用微信“扫一扫”","分享给您的微信好友",
             "相关链接",'下载文字版','下载图片版','扫一扫在手机打开当前页面',"微信扫一扫：分享","上一篇","下一篇","【打印文章】","返回顶部",
-            "你的浏览器不支持video","当前位置：","微信里点“发现”，扫一下","浏览次数：","您当前的位置：",'返回上一页',"信息公开目录","索引号"
+            "你的浏览器不支持video","当前位置：","微信里点“发现”，扫一下","浏览次数：","您当前的位置：",'返回上一页'
         ]
         
         for tag_text in tags_to_delete:
@@ -1633,6 +1632,7 @@ def preprocess_html_remove_interference(page_tree):
     logger.info("\n=== 清理后的HTML内容(只展示前2000字) ===")
     logger.info(cleaned_html[:2000] + "..." if len(cleaned_html) > 2000 else cleaned_html)
     logger.info("=== HTML内容结束 ===\n")
+    
     return body
 
 def remove_display_none_elements(body):
@@ -2173,7 +2173,7 @@ def extract_content_to_markdown(html_content: str):
         except Exception as e:
             logger.error(f"转换容器HTML时出错: {e}")
             container_html = html_content
-        
+
         # 清理HTML内容 - 确保变量总是有值
         try:
             cleaned_container_html = clean_container_html(container_html)
@@ -4138,7 +4138,6 @@ def is_interference_identifier(identifier):
             return True
     
     return False
-
 def clean_html_content_advanced_two(html_content: str) -> str:
    
     try:
@@ -4153,7 +4152,7 @@ def clean_html_content_advanced_two(html_content: str) -> str:
             "已阅","字号", "打印", "关闭", "收藏","分享到微信","分享","字体","小","中","大","s92及gd格式的文件请用SEP阅读工具",
             "扫一扫在手机打开当前页", "扫一扫在手机上查看当前页面","用微信“扫一扫”","分享给您的微信好友",
             "相关链接",'下载文字版','下载图片版','扫一扫在手机打开当前页面',"微信扫一扫：分享","上一篇","下一篇","【打印文章】","返回顶部","你的浏览器不支持video",
-            "当前位置：","首页","信息公开目录","索引号","发布时间：202","微信里点“发现”，扫一下","浏览次数：","您当前的位置：",'返回上一页'
+            "当前位置：","首页","信息公开目录","索引号","发布时间：202"
         ]
 
         for tag_text in tags_to_delete:
@@ -4411,7 +4410,7 @@ def html_to_markdown_simple(html_content: str) -> str:
 
         markdown_content = converter.convert(html_content)
 
-        # 清理多余空行
+        # 清理多余空行：将任意连续空白行（含空格）压缩为单个空行
         markdown_content = clean_markdown_content(markdown_content)
 
         return markdown_content.strip()
@@ -4514,7 +4513,7 @@ import os
 import glob
 
 # 启动服务器的函数
-def start_server(host: str = "0.0.0.0", port: int = 8421):
+def start_server(host: str = "0.0.0.0", port: int = 8321):
     """启动FastAPI服务器"""
     uvicorn.run(app, host=host, port=port)
 
