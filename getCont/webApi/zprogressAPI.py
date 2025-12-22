@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 # 配置常量
 CONFIG = {
-    "extract_api_url": os.getenv("EXTRACT_API_URL", "http://172.26.16.12:8000/extract"),
+    "extract_api_url": os.getenv("EXTRACT_API_URL", "http://192.168.182.41:8000/extract"),
     "max_html_size": int(os.getenv("MAX_HTML_SIZE", 10 * 1024 * 1024)),  # 10MB
     "request_timeout": int(os.getenv("REQUEST_TIMEOUT", 30)),  # 30秒
     "allowed_origins": os.getenv("ALLOWED_ORIGINS", "*").split(",") if os.getenv("ALLOWED_ORIGINS") else ["*"],
@@ -319,7 +319,7 @@ class URLPlaceholderReplacer:
         for video in soup.find_all('video'):
             # 替换src属性
             src = video.get('src')
-            if src and self.is_media_url(src):
+            if src :
                 full_src = process_url(src)
                 placeholder = self._generate_placeholder(full_src)
                 self.placeholder_mapping[placeholder] = full_src
@@ -327,7 +327,7 @@ class URLPlaceholderReplacer:
 
             # 替换poster属性
             poster = video.get('poster')
-            if poster and self.is_media_url(poster):
+            if poster :
                 full_poster = process_url(poster)
                 placeholder = self._generate_placeholder(full_poster)
                 self.placeholder_mapping[placeholder] = full_poster
@@ -336,7 +336,7 @@ class URLPlaceholderReplacer:
         # 处理source标签
         for source in soup.find_all('source'):
             src = source.get('src')
-            if src and self.is_media_url(src):
+            if src :
                 full_src = process_url(src)
                 placeholder = self._generate_placeholder(full_src)
                 self.placeholder_mapping[placeholder] = full_src
@@ -345,7 +345,7 @@ class URLPlaceholderReplacer:
         # 处理audio标签
         for audio in soup.find_all('audio'):
             src = audio.get('src')
-            if src and self.is_media_url(src):
+            if src :
                 full_src = process_url(src)
                 placeholder = self._generate_placeholder(full_src)
                 self.placeholder_mapping[placeholder] = full_src
@@ -363,7 +363,8 @@ class URLPlaceholderReplacer:
         # 处理img标签
         for img in soup.find_all('img'):
             src = img.get('src')
-            if src and self.is_media_url(src):
+            # print(src)
+            if src :
                 full_src = process_url(src)
                 placeholder = self._generate_placeholder(full_src)
                 self.placeholder_mapping[placeholder] = full_src
