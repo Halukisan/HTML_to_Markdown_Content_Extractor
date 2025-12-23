@@ -495,69 +495,81 @@ class URLPlaceholderReplacer:
             if not url.startswith(('http://', 'https://')) and base_url:
                 url = urllib.parse.urljoin(base_url, url)
             return url
-
+        def should_skip_url(url: str) -> bool:
+            """检查URL后缀是否为.html或.htm，如果是则跳过处理"""
+            if not url:
+                return False
+            url_lower = url.lower().split('?')[0]  # 去除查询参数后再判断
+            return url_lower.endswith('.html') or url_lower.endswith('.htm')
         # 处理video标签
         for video in soup.find_all('video'):
             # 替换src属性
             src = video.get('src')
-            if src and self.is_media_url(src):
+            if src:
                 full_src = process_url(src)
-                placeholder = self._generate_placeholder(full_src)
-                self.placeholder_mapping[placeholder] = full_src
-                video['src'] = f"{{{{{placeholder}}}}}"
+                if not should_skip_url(full_src):
+                    placeholder = self._generate_placeholder(full_src)
+                    self.placeholder_mapping[placeholder] = full_src
+                    video['src'] = f"{{{{{placeholder}}}}}"
 
             # 替换poster属性
             poster = video.get('poster')
-            if poster and self.is_media_url(poster):
+            if poster:
                 full_poster = process_url(poster)
-                placeholder = self._generate_placeholder(full_poster)
-                self.placeholder_mapping[placeholder] = full_poster
-                video['poster'] = f"{{{{{placeholder}}}}}"
+                if not should_skip_url(full_poster):
+                    placeholder = self._generate_placeholder(full_poster)
+                    self.placeholder_mapping[placeholder] = full_poster
+                    video['poster'] = f"{{{{{placeholder}}}}}"
 
         # 处理source标签
         for source in soup.find_all('source'):
             src = source.get('src')
-            if src and self.is_media_url(src):
+            if src:
                 full_src = process_url(src)
-                placeholder = self._generate_placeholder(full_src)
-                self.placeholder_mapping[placeholder] = full_src
-                source['src'] = f"{{{{{placeholder}}}}}"
+                if not should_skip_url(full_src):
+                    placeholder = self._generate_placeholder(full_src)
+                    self.placeholder_mapping[placeholder] = full_src
+                    source['src'] = f"{{{{{placeholder}}}}}"
 
         # 处理audio标签
         for audio in soup.find_all('audio'):
             src = audio.get('src')
-            if src and self.is_media_url(src):
+            if src:
                 full_src = process_url(src)
-                placeholder = self._generate_placeholder(full_src)
-                self.placeholder_mapping[placeholder] = full_src
-                audio['src'] = f"{{{{{placeholder}}}}}"
+                if not should_skip_url(full_src):
+                    placeholder = self._generate_placeholder(full_src)
+                    self.placeholder_mapping[placeholder] = full_src
+                    audio['src'] = f"{{{{{placeholder}}}}}"
 
         # 处理iframe标签
         for iframe in soup.find_all('iframe'):
             src = iframe.get('src')
             if src and ('player' in src.lower() or 'video' in src.lower() or 'audio' in src.lower()):
                 full_src = process_url(src)
-                placeholder = self._generate_placeholder(full_src)
-                self.placeholder_mapping[placeholder] = full_src
-                iframe['src'] = f"{{{{{placeholder}}}}}"
+                if not should_skip_url(full_src):
+                    placeholder = self._generate_placeholder(full_src)
+                    self.placeholder_mapping[placeholder] = full_src
+                    iframe['src'] = f"{{{{{placeholder}}}}}"
 
         # 处理img标签
         for img in soup.find_all('img'):
             src = img.get('src')
-            if src and self.is_media_url(src):
+            if src:
                 full_src = process_url(src)
-                placeholder = self._generate_placeholder(full_src)
-                self.placeholder_mapping[placeholder] = full_src
-                img['src'] = f"{{{{{placeholder}}}}}"
+                if not should_skip_url(full_src):
+                    placeholder = self._generate_placeholder(full_src)
+                    self.placeholder_mapping[placeholder] = full_src
+                    img['src'] = f"{{{{{placeholder}}}}}"
 
         # 处理a标签（下载链接）
         for a in soup.find_all('a'):
             href = a.get('href')
             if href and self.is_media_url(href):
                 full_href = process_url(href)
-                placeholder = self._generate_placeholder(full_href)
-                self.placeholder_mapping[placeholder] = full_href
-                a['href'] = f"{{{{{placeholder}}}}}"
+                if not should_skip_url(full_href):
+                    placeholder = self._generate_placeholder(full_href)
+                    self.placeholder_mapping[placeholder] = full_href
+                    a['href'] = f"{{{{{placeholder}}}}}"
 
         return str(soup)
 
