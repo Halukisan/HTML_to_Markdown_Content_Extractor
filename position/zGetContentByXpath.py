@@ -12,7 +12,7 @@ from bs4 import BeautifulSoup, Comment,Tag
 import logging
 import os
 from logging.handlers import RotatingFileHandler
-from typing import Tuple
+from typing import Tuple, Set
 # import datetime
 # 用于测试--------------------------------------------------------------------------
 # def setup_logging():
@@ -215,8 +215,21 @@ def delete_short_tags(soup: BeautifulSoup, tag_text: str) -> None:
 
         # 允许删除的标签类型
         if parent.name in {'span', 'div', 'a', 'button', 'p', 'dt', 'li', 'h4', 'font'}:
-            # print(f"删除短标签: {parent_text}")
-            elements_to_delete.append(parent)
+            if parent.name == 'button':
+                path_attr = parent.get('path')
+                if path_attr:
+                    path_lower = path_attr.lower()
+                    if any(ext in path_lower for ext in (
+                        '.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac',
+                        '.mp4', '.webm', '.mov', '.avi', '.mkv', '.flv', '.m3u8'
+                    )):
+                        pass
+                    else:
+                        elements_to_delete.append(parent)
+                else:
+                    elements_to_delete.append(parent)
+            else:
+                elements_to_delete.append(parent)
 
     # 安全删除
     for elem in elements_to_delete:
@@ -326,6 +339,13 @@ def remove_empty_tags(soup: BeautifulSoup) -> None:
                     if child.name in tags_to_keep_empty:
                         has_content = True
                         break
+            # button标签里面包含音频的情况
+            if not has_content and tag.name == 'button':
+                path_attr = tag.get('path')
+                if path_attr:
+                    path_lower = path_attr.lower()
+                    if any(ext in path_lower for ext in MEDIA_EXTENSIONS):
+                        has_content = True
 
             # 如果标签为空，将其删除
             if not has_content:
@@ -397,7 +417,8 @@ def clean_html_content_advanced(html_content: str) -> str:
             'video': ['src', 'poster', 'controls'],
             'source': ['src'],
             'iframe': ['src'],
-            'br': [], 'hr': []
+            'br': [], 'hr': [],
+            'button':['path']
         }
 
         def clean_attributes(tag):
@@ -816,12 +837,10 @@ def check_by_punctuation(soup: BeautifulSoup, cutoff_element: Tag, html_content:
                 logger.debug(f"DEBUG: 原始HTML长度: {len(html_content)}")
                 # 尝试只使用元素的文本内容进行匹配
                 text_content = clean_text(cutoff_element.get_text())
-                print(text_content)
-                print(len(text_content))
+
                 if text_content and len(text_content) > 5:  # 如果有意义的文本
                     prefix = text_content[:15]
                     prefix = prefix.rstrip()
-                    print(prefix)
                     if prefix:
                         text_pos = html_content.find(prefix)
                         if text_pos != -1:
@@ -1418,7 +1437,8 @@ def clean_html_content_with_split(html_content: str) -> str:
 class HTMLInput(BaseModel):
     html_content: str
     url: str = ""  # 可选的URL字段，暂时不处理
-    
+    need_placeholder: bool = False  # 是否启用资源替换为占位符的服务
+
 class MarkdownOutput(BaseModel):
     markdown_content: str
     html_content: str  # 提取的HTML内容
@@ -1426,11 +1446,15 @@ class MarkdownOutput(BaseModel):
     status: str
     process_time: float
     # 2025.12.5新增字段
-    header_content_text: str = ""  # 正文之上的内容纯文本 
+    header_content_text: str = ""  # 正文之上的内容纯文本
     cl_content_html: str = ""      # 清理过后的正文HTML
     cl_content_md: str = ""        # 清理过后的正文MD
     cl_content_text: str = ""      # 清理过后的正文纯文本
-    extract_success: bool = False     # 正文提取得到的数据是否可用
+    extract_success: bool = False  # 正文提取得到的数据是否可用
+    # 占位符相关字段
+    placeholder_html: str = ""
+    placeholder_markdown: str = ""
+    placeholder_mapping: str = ""
     # 新增字段结束
 
 # 移除了浏览器相关的函数，现在只处理HTML内容
@@ -4197,7 +4221,8 @@ def clean_html_content_advanced_two(html_content: str) -> str:
             'video': ['src', 'poster', 'controls'],
             'source': ['src'],
             'iframe': ['src'],
-            'br': [], 'hr': []
+            'br': [], 'hr': [],
+            'button':['path']
         }
 
         def clean_attributes(tag):
@@ -4422,6 +4447,286 @@ def html_to_markdown_simple(html_content: str) -> str:
 
 # 2025.12.5新增内容结束----------------------------------------
 
+# ==================== 占位符替换相关代码 ====================
+
+IGNORED_QUERY_PARAMS: Set[str] = {
+    'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
+    'ref', '_t', 'timestamp', 'v', 'cache_bust'
+}
+
+def normalize_url(url: str, ignore_params: Set[str] = IGNORED_QUERY_PARAMS) -> str:
+    """
+    对URL进行标准化，用于去重和哈希。
+    """
+    parsed = urllib.parse.urlparse(url)
+    query_dict = parse_qs(parsed.query, keep_blank_values=True)
+
+    if ignore_params:
+        query_dict = {k: v for k, v in query_dict.items() if k not in ignore_params}
+
+    sorted_items = []
+    for key in sorted(query_dict.keys()):
+        values = query_dict[key]
+        for val in values:
+            sorted_items.append((key, val))
+
+    normalized_query = urlencode(
+        sorted_items,
+        doseq=False,
+        safe='',
+        quote_via=lambda x, *args, **kwargs: x
+    )
+
+    normalized = urlunparse((
+        parsed.scheme,
+        parsed.netloc.lower(),
+        parsed.path,
+        parsed.params,
+        normalized_query,
+        ''
+    ))
+
+    return normalized
+
+
+class URLPlaceholderReplacer:
+    """
+    独立的URL占位符替换器
+    格式：{文件夹前缀}/{8位md5}_{8位哈希}.{扩展名}
+    """
+
+    def __init__(self):
+        self.placeholder_mapping = {}
+
+    def is_media_url(self, url: str) -> bool:
+        """判断URL是否为媒体文件URL"""
+        if not url:
+            return False
+
+        video_extensions = ['.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm', '.mkv', '.m4v']
+        audio_extensions = ['.mp3', '.wav', '.flac', '.aac', '.ogg', '.wma', '.m4a']
+        file_extensions = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+                         '.zip', '.rar', '.tar', '.gz', '.7z', '.txt', '.rtf']
+        pic_extensions = ['.jpg', '.png', '.jpeg', '.webp', '.svg']
+
+        url_lower = url.lower()
+
+        for ext in video_extensions + audio_extensions + file_extensions + pic_extensions:
+            if url_lower.endswith(ext):
+                return True
+
+        media_keywords = ['video', 'audio', 'player', 'stream', 'media', 'download', 'file']
+        for keyword in media_keywords:
+            if keyword in url_lower:
+                return True
+
+        return False
+
+    def _generate_placeholder(self, url: str) -> str:
+        """生成占位符"""
+        normalized_url = normalize_url(url)
+        url_hash = hashlib.sha256(normalized_url.encode('utf-8')).hexdigest()
+        md5content = url_hash[:32]
+        prefix = url_hash[:3]
+        placeholder = f"{prefix}/{md5content}"
+        self.placeholder_mapping[placeholder] = url
+        return placeholder
+
+    def replace_urls_with_placeholders(self, html_content: str, base_url: str = "") -> str:
+        """将HTML中的媒体文件URL替换为占位符"""
+        soup = BeautifulSoup(html_content, 'html.parser')
+
+        def process_url(url: str) -> str:
+            if not url:
+                return ""
+            if not url.startswith(('http://', 'https://')) and base_url:
+                url = urllib.parse.urljoin(base_url, url)
+            return url
+
+        def should_skip_url(url: str) -> bool:
+            if not url:
+                return False
+            url_lower = url.lower().split("?")[0]
+            return url_lower.endswith('.html') or url_lower.endswith(".htm")
+
+        # 处理video标签
+        for video in soup.find_all('video'):
+            src = video.get('src')
+            if src:
+                full_src = process_url(src)
+                if not should_skip_url(full_src):
+                    placeholder = self._generate_placeholder(full_src)
+                    self.placeholder_mapping[placeholder] = full_src
+                    video['src'] = f"{{{{{placeholder}}}}}"
+
+            poster = video.get('poster')
+            if poster:
+                full_poster = process_url(poster)
+                if not should_skip_url(full_poster):
+                    placeholder = self._generate_placeholder(full_poster)
+                    self.placeholder_mapping[placeholder] = full_poster
+                    video['poster'] = f"{{{{{placeholder}}}}}"
+
+        # 处理source标签
+        for source in soup.find_all('source'):
+            src = source.get('src')
+            if src:
+                full_src = process_url(src)
+                if not should_skip_url(full_src):
+                    placeholder = self._generate_placeholder(full_src)
+                    self.placeholder_mapping[placeholder] = full_src
+                    source['src'] = f"{{{{{placeholder}}}}}"
+
+        # 处理audio标签
+        for audio in soup.find_all('audio'):
+            src = audio.get('src')
+            if src:
+                full_src = process_url(src)
+                if not should_skip_url(full_src):
+                    placeholder = self._generate_placeholder(full_src)
+                    self.placeholder_mapping[placeholder] = full_src
+                    audio['src'] = f"{{{{{placeholder}}}}}"
+
+        # 处理iframe标签
+        for iframe in soup.find_all('iframe'):
+            src = iframe.get('src')
+            if src and ('player' in src.lower() or 'video' in src.lower() or 'audio' in src.lower()):
+                full_src = process_url(src)
+                if not should_skip_url(full_src):
+                    placeholder = self._generate_placeholder(full_src)
+                    self.placeholder_mapping[placeholder] = full_src
+                    iframe['src'] = f"{{{{{placeholder}}}}}"
+
+        # 处理button标签
+        for button in soup.find_all('button'):
+            src = button.get('path')
+            if src:
+                src_lower = src.lower()
+
+                has_media_ext = any(ext in src_lower for ext in (
+                '.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac',
+                '.mp4', '.webm', '.mov', '.avi', '.mkv', '.flv', '.m3u8'
+                ))
+                if has_media_ext:
+                    full_src = process_url(src)
+                    if not should_skip_url(full_src):
+                        placeholder = self._generate_placeholder(full_src)
+                        self.placeholder_mapping[placeholder] = full_src
+                        button['path'] = f"{{{{{placeholder}}}}}"
+
+        # 处理img标签
+        for img in soup.find_all('img'):
+            src = img.get('src')
+            if src:
+                full_src = process_url(src)
+                if not should_skip_url(full_src):
+                    placeholder = self._generate_placeholder(full_src)
+                    self.placeholder_mapping[placeholder] = full_src
+                    img['src'] = f"{{{{{placeholder}}}}}"
+
+        # 处理a标签（下载链接）
+        for a in soup.find_all('a'):
+            href = a.get('href')
+            if href and self.is_media_url(href):
+                full_href = process_url(href)
+                if not should_skip_url(full_href):
+                    placeholder = self._generate_placeholder(full_href)
+                    self.placeholder_mapping[placeholder] = full_href
+                    a['href'] = f"{{{{{placeholder}}}}}"
+
+        return str(soup)
+
+
+def process_base_url(url):
+    """处理base_url，去除最后一个/后面的内容"""
+    if not url:
+        return ""
+
+    try:
+        from urllib.parse import urlparse
+        url_obj = urlparse(url)
+        pathname = url_obj.path
+
+        last_slash_index = pathname.rfind('/')
+        if last_slash_index > 0:
+            url_obj = url_obj._replace(path=pathname[:last_slash_index + 1])
+        elif pathname == '/':
+            pass
+        else:
+            url_obj = url_obj._replace(path='/')
+
+        return url_obj.geturl()
+    except Exception as e:
+        logger.error(f"URL处理错误: {e}")
+        return url
+
+
+def html_to_text(html_content: str) -> str:
+    """将HTML转换为纯文本"""
+    try:
+        soup = BeautifulSoup(html_content, 'html.parser')
+
+        for script in soup(["script", "style"]):
+            script.decompose()
+
+        text = soup.get_text()
+
+        lines = (line.strip() for line in text.splitlines())
+        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+        return '\n'.join(chunk for chunk in chunks if chunk)
+
+    except Exception as e:
+        logger.error(f"HTML转文本时出错: {str(e)}")
+        return re.sub(r'<[^>]+>', '', html_content)
+
+
+def process_with_placeholders(html_content: str, url: str = "") -> dict:
+    """
+    处理HTML内容，生成带占位符的结果
+
+    Args:
+        html_content: 原始HTML内容
+        url: 页面URL（用于处理相对路径）
+
+    Returns:
+        dict: 包含带占位符的HTML、Markdown、文本和映射关系
+    """
+    # 处理base_url
+    if url:
+        base_url = process_base_url(url)
+    else:
+        base_url = ""
+
+    # 使用URLPlaceholderReplacer替换资源URL
+    replacer = URLPlaceholderReplacer()
+    html_with_placeholders = replacer.replace_urls_with_placeholders(html_content, base_url)
+
+    # 转换带占位符的Markdown
+    converter = CustomMarkdownConverter(
+        heading_style="ATX",
+        bullets="*",
+        strip=['script', 'style']
+    )
+    md_with_placeholders = converter.convert(html_with_placeholders)
+    md_with_placeholders = clean_markdown_content(md_with_placeholders)
+
+    # 生成带占位符的纯文本
+    text_with_placeholders = html_to_text(html_with_placeholders)
+
+    # 生成占位符映射关系（转为json数组格式）
+    placeholder_mapping_list = [{"placeholder": k, "original_url": v}
+                                for k, v in replacer.placeholder_mapping.items()]
+    placeholder_mapping = json.dumps(placeholder_mapping_list, ensure_ascii=False, indent=2)
+
+    return {
+        "placeholder_html": html_with_placeholders,
+        "placeholder_markdown": md_with_placeholders,
+        "placeholder_text": text_with_placeholders,
+        "placeholder_mapping": placeholder_mapping
+    }
+
+# ==================== 占位符替换相关代码结束 ====================
+
 # FastAPI路由
 @app.get("/")
 async def root():
@@ -4489,6 +4794,21 @@ async def extract_html_to_markdown(input_data: HTMLInput):
         #   header_content_text: 正文之上的内容,包含标题和 标题与正文中间的内容 的html
         #   extract_success:(true/false)正文提取得到的数据是否可用
 
+        # 初始化占位符相关字段
+        placeholder_html = ""
+        placeholder_markdown = ""
+        placeholder_mapping = ""
+
+        # 如果启用占位符替换服务
+        if input_data.need_placeholder:
+            # 使用 cl_content_html 作为输入（清理后的HTML）
+            html_for_placeholder = final_result.get('cl_content_html', '')
+            if html_for_placeholder:
+                placeholder_result = process_with_placeholders(html_for_placeholder, input_data.url)
+                placeholder_html = placeholder_result.get('placeholder_html', '')
+                placeholder_markdown = placeholder_result.get('placeholder_markdown', '')
+                placeholder_mapping = placeholder_result.get('placeholder_mapping', '')
+
         # 统一使用 final_result 作为数据源，确保逻辑清晰
         return MarkdownOutput(
             markdown_content=final_result.get('markdown_content', result['markdown_content']),
@@ -4500,7 +4820,10 @@ async def extract_html_to_markdown(input_data: HTMLInput):
             cl_content_html=final_result.get('cl_content_html', ''),
             cl_content_md=final_result.get('cl_content_md', ''),
             cl_content_text=final_result.get('cl_content_text',''),
-            extract_success=final_result.get('extract_success', False)
+            extract_success=final_result.get('extract_success', False),
+            placeholder_html=placeholder_html,
+            placeholder_markdown=placeholder_markdown,
+            placeholder_mapping=placeholder_mapping
         )
         
     except HTTPException:
