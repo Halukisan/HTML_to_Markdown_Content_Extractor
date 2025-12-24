@@ -2,7 +2,8 @@ import re
 import string
 import logging
 from datetime import datetime
-from lxml import html
+from lxml import html as lxml_html
+import html
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import markdownify
@@ -81,6 +82,48 @@ class CustomMarkdownConverter(MarkdownConverter):
     def convert_source(self,el,text,convert_as_inline=False,**kwargs):
         return ""
 
+    def convert_button(self, el, text, convert_as_inline=False, **kwargs):
+        src = el.get('path')
+        
+        # 定义音频后缀白名单
+        AUDIO_EXTENSIONS = {'.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac'}
+        
+        # 判断逻辑：有 src 且后缀在白名单中
+        is_audio = src and any(ext in src.lower() for ext in AUDIO_EXTENSIONS)
+
+        if not is_audio:
+            # 【重要】MarkdownConverter 基类没有 convert_button，
+            # 所以不能用 super()。对于普通按钮，我们通常只返回按钮上的文字。
+            return text 
+
+        # 是音频，执行转换
+        safe_src = html.escape(src)
+        audio_html = f'\n<audio controls preload="metadata"><source src="{safe_src}"></audio>\n'
+        
+        return audio_html
+
+    def convert_audio(self, el, text, convert_as_inline=False, **kwargs):
+        """
+        处理原生 <audio> 标签，确保输出统一、带 controls 的标准格式
+        支持: 
+          - <audio src="a.mp3">
+          - <audio><source src="a.mp3"></audio>
+        """
+        src = el.get('src')
+        if not src:
+            # 尝试从子 <source> 获取
+            source_tag = el.find('source', src=True)
+            if source_tag:
+                src = source_tag.get('src')
+
+        if not src:
+            return ""  # 无有效音频源，丢弃
+
+        # 强制添加必要属性
+        safe_src = html.escape(src)
+        return f'\n<audio controls preload="metadata"><source src="{safe_src}"></audio>\n'
+        
+
 def delete_short_tags(soup: BeautifulSoup, tag_text: str) -> None:
 
     elements_to_delete = []
@@ -147,10 +190,8 @@ def delete_short_tags(soup: BeautifulSoup, tag_text: str) -> None:
                 path_attr = parent.get('path')
                 if path_attr:
                     path_lower = path_attr.lower()
-                    if any(ext in path_lower for ext in (
-                        '.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac',
-                        '.mp4', '.webm', '.mov', '.avi', '.mkv', '.flv', '.m3u8'
-                    )):
+                    # 只保留包含音频文件的button（会被转换为audio标签）
+                    if any(ext in path_lower for ext in ('.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac')):
                         pass
                     else:
                         elements_to_delete.append(parent)
@@ -1183,7 +1224,7 @@ def preprocess_html_remove_interference(page_tree):
     removed_count = remove_page_level_header_footer(body)
     
     
-    cleaned_html = html.tostring(body, encoding='unicode', pretty_print=True)
+    cleaned_html = lxml_html.tostring(body, encoding='unicode', pretty_print=True)
     
     return body
 
@@ -1570,7 +1611,7 @@ def extract_content_to_markdown(html_content: str):
         if not html_content or not isinstance(html_content, str):
             return result
 
-        tree = html.fromstring(html_content)
+        tree = lxml_html.fromstring(html_content)
 
         main_container, cleaned_body = find_article_container(tree)
 
@@ -1585,7 +1626,7 @@ def extract_content_to_markdown(html_content: str):
             xpath = ""
 
         try:
-            container_html = html.tostring(main_container, encoding='unicode', pretty_print=True)
+            container_html = lxml_html.tostring(main_container, encoding='unicode', pretty_print=True)
             if not container_html:
                 container_html = html_content
         except Exception as e:
@@ -3402,22 +3443,26 @@ class URLPlaceholderReplacer:
                     self.placeholder_mapping[placeholder] = full_src
                     iframe['src'] = f"{{{{{placeholder}}}}}"
 
-        # 处理button标签
+        # 处理button标签：将包含音频文件的button转换为audio标签！！markdownify不支持重写button的转换器
         for button in soup.find_all('button'):
             src = button.get('path')
             if src:
                 src_lower = src.lower()
+                full_src = process_url(src)
 
-                has_media_ext = any(ext in src_lower for ext in (
-                '.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac',
-                '.mp4', '.webm', '.mov', '.avi', '.mkv', '.flv', '.m3u8'
-                ))
-                if has_media_ext:
-                    full_src = process_url(src)
+                # 音频扩展名
+                audio_extensions = ('.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac')
+
+                if any(ext in src_lower for ext in audio_extensions):
+                    # 将button转换为audio标签
                     if not should_skip_url(full_src):
                         placeholder = self._generate_placeholder(full_src)
                         self.placeholder_mapping[placeholder] = full_src
-                        button['path'] = f"{{{{{placeholder}}}}}"
+                        # 创建audio标签替换button
+                        audio_tag = soup.new_tag('audio')
+                        audio_tag['src'] = f"{{{{{placeholder}}}}}"
+                        audio_tag['controls'] = 'controls'
+                        button.replace_with(audio_tag)
 
         # 处理img标签
         for img in soup.find_all('img'):
@@ -3617,7 +3662,7 @@ import glob
 
 def start_server(host: str = "0.0.0.0", port: int = 8321):
     uvicorn.run(app, host=host, port=port,log_level="critical",access_log=False)
-
+    # log_level="critical"
 if __name__ == "__main__":
     import sys
     
