@@ -2,7 +2,8 @@ import re
 import string
 import logging
 from datetime import datetime
-from lxml import html
+from lxml import html as lxml_html
+import html
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import markdownify
@@ -82,25 +83,30 @@ class CustomMarkdownConverter(MarkdownConverter):
         super().__init__(**options)
 
     def convert_video(self,el,text,convert_as_inline=False,**kwargs):
-        src = el.get('src')
-        poster = el.get('poster')
+        # src = el.get('src')
+        # poster = el.get('poster')
 
-        if not src:
-            source_tag = el.find('source')
-            if source_tag:
-                src = source_tag.get('src')
+        # if not src:
+        #     source_tag = el.find('source')
+        #     if source_tag:
+        #         src = source_tag.get('src')
 
-        if not src:
-            return ""
+        # if not src:
+        #     return ""
         
-        html_output = f'<video src="{src}" controls="controls" width="100%"'
+        # html_output = f'<video src="{src}" controls="controls" width="100%"'
 
-        if poster:
-            html_output += f' poster="{poster}"'
+        # if poster:
+        #     html_output += f' poster="{poster}"'
 
-        html_output += '></video>'
+        # html_output += '></video>'
 
-        return f'\n{html_output}\n'
+        # return f'\n{html_output}\n'
+        el['width'] = '100%'
+        el['controls'] = 'controls'
+        if 'style' in el.attrs:
+            del el['style']
+        return f'\n{str(el)}\n'
     
     def convert_table(self, el, text, conversion_args=None,**kwargs):
         """
@@ -128,7 +134,48 @@ class CustomMarkdownConverter(MarkdownConverter):
         # 我传过来的html都是清理过的,所以输出的html也是干净的,没有多余属性的
         return f'\n{html_output}\n'
     def convert_source(self,el,text,convert_as_inline=False,**kwargs):
-        return ""
+        html_output = str(el)
+        return f'\n{html_output}\n'
+    def convert_button(self, el, text, convert_as_inline=False, **kwargs):
+        src = el.get('path')
+        
+        # 定义音频后缀白名单
+        AUDIO_EXTENSIONS = {'.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac'}
+        
+        # 判断逻辑：有 src 且后缀在白名单中
+        is_audio = src and any(ext in src.lower() for ext in AUDIO_EXTENSIONS)
+
+        if not is_audio:
+            # 【重要】MarkdownConverter 基类没有 convert_button，
+            # 所以不能用 super()。对于普通按钮，我们通常只返回按钮上的文字。
+            return text 
+
+        # 是音频，执行转换
+        safe_src = html.escape(src)
+        audio_html = f'\n<audio controls preload="metadata"><source src="{safe_src}"></audio>\n'
+        
+        return audio_html
+
+    def convert_audio(self, el, text, convert_as_inline=False, **kwargs):
+        """
+        处理原生 <audio> 标签，确保输出统一、带 controls 的标准格式
+        支持: 
+          - <audio src="a.mp3">
+          - <audio><source src="a.mp3"></audio>
+        """
+        src = el.get('src')
+        if not src:
+            # 尝试从子 <source> 获取
+            source_tag = el.find('source', src=True)
+            if source_tag:
+                src = source_tag.get('src')
+
+        if not src:
+            return ""  # 无有效音频源，丢弃
+
+        # 强制添加必要属性
+        safe_src = html.escape(src)
+        return f'\n<audio controls preload="metadata"><source src="{safe_src}"></audio>\n'
 
 def delete_short_tags(soup: BeautifulSoup, tag_text: str) -> None:
     """
@@ -219,10 +266,8 @@ def delete_short_tags(soup: BeautifulSoup, tag_text: str) -> None:
                 path_attr = parent.get('path')
                 if path_attr:
                     path_lower = path_attr.lower()
-                    if any(ext in path_lower for ext in (
-                        '.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac',
-                        '.mp4', '.webm', '.mov', '.avi', '.mkv', '.flv', '.m3u8'
-                    )):
+                    # 只保留包含音频文件的button（会被转换为audio标签）
+                    if any(ext in path_lower for ext in ('.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac')):
                         pass
                     else:
                         elements_to_delete.append(parent)
@@ -442,6 +487,46 @@ def clean_html_content_advanced(html_content: str) -> str:
         for table in soup.find_all('table'):
             cleaned_table = clean_table_html(str(table))
             table.replace_with(BeautifulSoup(cleaned_table, 'html.parser'))
+
+        # 删除包含base64的img标签
+        for img in soup.find_all('img'):
+            if img:
+                src = img.get('src', '')
+                if not src or 'base64' in src.lower() or 'data:image' in src.lower():
+                    img.decompose()
+        # 专门清理video标签和audio标签
+        # 处理video标签：用video替换其父节点，保留视频去除无关文字
+        for video in soup.find_all('video'):
+            parent = video.parent
+            if parent and parent.name:
+                parent.replace_with(video)
+
+        # 处理audio标签：获取button中的mp3链接，创建新audio并替换父节点及其后一个兄弟节点
+        # 先收集所有button的mp3链接
+        mp3_links = []
+        for button in soup.find_all('button'):
+            if button.has_attr('path') and '.mp3' in button['path'].lower():
+                mp3_links.append(button['path'])
+
+        # 用mp3链接替换audio标签
+        for i, audio in enumerate(soup.find_all('audio')):
+            if i < len(mp3_links):
+                path = mp3_links[i]
+                # 创建新的audio标签
+                new_audio = soup.new_tag('audio', attrs={'controls': '', 'preload': 'metadata'})
+                source = soup.new_tag('source', attrs={'src': path})
+                new_audio.append(source)
+
+                # 获取audio的父节点
+                parent = audio.parent
+                if parent and parent.name:
+                    # 删除父节点的后一个兄弟节点
+                    next_sibling = parent.find_next_sibling()
+                    if next_sibling:
+                        next_sibling.decompose()
+                    # 用新audio替换父节点
+                    parent.replace_with(new_audio)
+
 
         # 移除空标签
         remove_empty_tags(soup)
@@ -832,7 +917,7 @@ def check_by_punctuation(soup: BeautifulSoup, cutoff_element: Tag, html_content:
             cutoff_pos = html_content.find(simplified_cutoff_str)
 
             if cutoff_pos == -1:
-                logger.warning(f"WARNING: 无法在原始HTML中找到分界点，分界点类型: {cutoff_element.name}")
+                logger.debug(f"WARNING: 无法在原始HTML中找到分界点，分界点类型: {cutoff_element.name}")
                 logger.debug(f"DEBUG: 分界点内容预览: {cutoff_str[:200]}...")
                 logger.debug(f"DEBUG: 原始HTML长度: {len(html_content)}")
                 # 尝试只使用元素的文本内容进行匹配
@@ -1440,16 +1525,16 @@ class HTMLInput(BaseModel):
     need_placeholder: bool = False  # 是否启用资源替换为占位符的服务
 
 class MarkdownOutput(BaseModel):
-    markdown_content: str
+    # markdown_content: str
     html_content: str  # 提取的HTML内容
-    xpath: str
+    # xpath: str
     status: str
-    process_time: float
+    # process_time: float
     # 2025.12.5新增字段
     header_content_text: str = ""  # 正文之上的内容纯文本
     cl_content_html: str = ""      # 清理过后的正文HTML
     cl_content_md: str = ""        # 清理过后的正文MD
-    cl_content_text: str = ""      # 清理过后的正文纯文本
+    content_text: str = ""      # 清理过后的正文纯文本
     extract_success: bool = False  # 正文提取得到的数据是否可用
     # 占位符相关字段
     placeholder_html: str = ""
@@ -1652,7 +1737,7 @@ def preprocess_html_remove_interference(page_tree):
     logger.info(f"精准清理完成：删除了 {removed_count} 个页面级header/footer")
     
     # 输出清理后的HTML到日志文件
-    cleaned_html = html.tostring(body, encoding='unicode', pretty_print=True)
+    cleaned_html = lxml_html.tostring(body, encoding='unicode', pretty_print=True)
     logger.info("\n=== 清理后的HTML内容(只展示前2000字) ===")
     logger.info(cleaned_html[:2000] + "..." if len(cleaned_html) > 2000 else cleaned_html)
     logger.info("=== HTML内容结束 ===\n")
@@ -2167,7 +2252,7 @@ def extract_content_to_markdown(html_content: str):
             return result
 
         # 解析HTML
-        tree = html.fromstring(html_content)
+        tree = lxml_html.fromstring(html_content)
 
         # 获取主内容容器（从清理后的tree中获取）
         main_container, cleaned_body = find_article_container(tree)
@@ -2190,7 +2275,7 @@ def extract_content_to_markdown(html_content: str):
 
         # 获取容器的HTML内容 - 确保变量总是有值
         try:
-            container_html = html.tostring(main_container, encoding='unicode', pretty_print=True)
+            container_html = lxml_html.tostring(main_container, encoding='unicode', pretty_print=True)
             if not container_html:
                 logger.warning("容器HTML转换为空，使用原始内容")
                 container_html = html_content
@@ -4242,12 +4327,19 @@ def clean_html_content_advanced_two(html_content: str) -> str:
         for tag in soup.find_all(True):
             clean_attributes(tag)
 
-        # 
+        # 删除包含base64的img标签
+        for img in soup.find_all('img'):
+            if img:
+                src = img.get('src', '')
+                if not src or 'base64' in src.lower() or 'data:image' in src.lower():
+                    img.decompose()
+
+        # 专门清理表格内部
         for table in soup.find_all('table'):
             cleaned_table = clean_table_html(str(table))
             table.replace_with(BeautifulSoup(cleaned_table, 'html.parser'))
 
-        # 
+        # 移除空标签
         remove_empty_tags(soup)
 
         return str(soup)
@@ -4597,22 +4689,26 @@ class URLPlaceholderReplacer:
                     self.placeholder_mapping[placeholder] = full_src
                     iframe['src'] = f"{{{{{placeholder}}}}}"
 
-        # 处理button标签
+        # 处理button标签：将包含音频文件的button转换为audio标签
         for button in soup.find_all('button'):
             src = button.get('path')
             if src:
                 src_lower = src.lower()
+                full_src = process_url(src)
 
-                has_media_ext = any(ext in src_lower for ext in (
-                '.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac',
-                '.mp4', '.webm', '.mov', '.avi', '.mkv', '.flv', '.m3u8'
-                ))
-                if has_media_ext:
-                    full_src = process_url(src)
+                # 音频扩展名
+                audio_extensions = ('.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac')
+
+                if any(ext in src_lower for ext in audio_extensions):
+                    # 将button转换为audio标签
                     if not should_skip_url(full_src):
                         placeholder = self._generate_placeholder(full_src)
                         self.placeholder_mapping[placeholder] = full_src
-                        button['path'] = f"{{{{{placeholder}}}}}"
+                        # 创建audio标签替换button
+                        audio_tag = soup.new_tag('audio')
+                        audio_tag['src'] = f"{{{{{placeholder}}}}}"
+                        audio_tag['controls'] = 'controls'
+                        button.replace_with(audio_tag)
 
         # 处理img标签
         for img in soup.find_all('img'):
@@ -4811,18 +4907,19 @@ async def extract_html_to_markdown(input_data: HTMLInput):
 
         # 统一使用 final_result 作为数据源，确保逻辑清晰
         return MarkdownOutput(
-            markdown_content=final_result.get('markdown_content', result['markdown_content']),
+            # markdown_content=final_result.get('markdown_content', result['markdown_content']),
             html_content=final_result.get('html_content', result['html_content']),
-            xpath=final_result.get('xpath', result['xpath']),
+            # xpath=final_result.get('xpath', result['xpath']),
             status=final_result.get('status', result['status']),
-            process_time=elapsed,
+            # process_time=elapsed,
             header_content_text=final_result.get('header_content_text', ''),
             cl_content_html=final_result.get('cl_content_html', ''),
             cl_content_md=final_result.get('cl_content_md', ''),
-            cl_content_text=final_result.get('cl_content_text',''),
+            content_text=final_result.get('cl_content_text',''),
             extract_success=final_result.get('extract_success', False),
             placeholder_html=placeholder_html,
             placeholder_markdown=placeholder_markdown,
+            # placeholder_text=placeholder_text,
             placeholder_mapping=placeholder_mapping
         )
         
