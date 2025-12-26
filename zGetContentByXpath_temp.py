@@ -46,25 +46,11 @@ class CustomMarkdownConverter(MarkdownConverter):
         super().__init__(**options)
 
     def convert_video(self,el,text,convert_as_inline=False,**kwargs):
-        src = el.get('src')
-        poster = el.get('poster')
-
-        if not src:
-            source_tag = el.find('source')
-            if source_tag:
-                src = source_tag.get('src')
-
-        if not src:
-            return ""
-        
-        html_output = f'<video src="{src}" controls="controls" width="100%"'
-
-        if poster:
-            html_output += f' poster="{poster}"'
-
-        html_output += '></video>'
-
-        return f'\n{html_output}\n'
+        el['width'] = '100%'
+        el['controls'] = 'controls'
+        if 'style' in el.attrs:
+            del el['style']
+        return f'\n{str(el)}\n'
     
     def convert_table(self, el, text, conversion_args=None,**kwargs):
 
@@ -80,6 +66,8 @@ class CustomMarkdownConverter(MarkdownConverter):
 
         return f'\n{html_output}\n'
     def convert_source(self,el,text,convert_as_inline=False,**kwargs):
+        # html_output = str(el)
+        # return f'\n{html_output}\n'
         return ""
 
     def convert_button(self, el, text, convert_as_inline=False, **kwargs):
@@ -92,8 +80,6 @@ class CustomMarkdownConverter(MarkdownConverter):
         is_audio = src and any(ext in src.lower() for ext in AUDIO_EXTENSIONS)
 
         if not is_audio:
-            # 【重要】MarkdownConverter 基类没有 convert_button，
-            # 所以不能用 super()。对于普通按钮，我们通常只返回按钮上的文字。
             return text 
 
         # 是音频，执行转换
@@ -365,7 +351,8 @@ def clean_html_content_advanced(html_content: str) -> str:
             'source': ['src'],
             'iframe': ['src'],
             'br': [], 'hr': [],
-            'button':['path']
+            'button':['path'],
+            'audio':[]
         }
 
         def clean_attributes(tag):
@@ -387,7 +374,34 @@ def clean_html_content_advanced(html_content: str) -> str:
         for table in soup.find_all('table'):
             cleaned_table = clean_table_html(str(table))
             table.replace_with(BeautifulSoup(cleaned_table, 'html.parser'))
+        for img in soup.find_all('img'):
+            if img:
+                src = img.get('src', '')
+                if not src or 'base64' in src.lower() or 'data:image' in src.lower():
+                    img.decompose()
+        for video in soup.find_all('video'):
+            parent = video.parent
+            if parent and parent.name:
+                parent.replace_with(video)
 
+        mp3_links = []
+        for button in soup.find_all('button'):
+            if button.has_attr('path') and '.mp3' in button['path'].lower():
+                mp3_links.append(button['path'])
+
+        for i, audio in enumerate(soup.find_all('audio')):
+            if i < len(mp3_links):
+                path = mp3_links[i]
+                new_audio = soup.new_tag('audio', attrs={'controls': '', 'preload': 'metadata'})
+                source = soup.new_tag('source', attrs={'src': path, 'type': 'audio/mpeg'})
+                new_audio.append(source)
+
+                parent = audio.parent
+                if parent and parent.name:
+                    next_sibling = parent.find_next_sibling()
+                    if next_sibling:
+                        next_sibling.decompose()
+                    parent.replace_with(new_audio)    
         remove_empty_tags(soup)
 
         return str(soup)
@@ -649,7 +663,7 @@ def check_by_punctuation(soup: BeautifulSoup, cutoff_element: Tag, html_content:
             cutoff_pos = html_content.find(simplified_cutoff_str)
 
             if cutoff_pos == -1:
-                logger.warning(f"WARNING: 无法在原始HTML中找到分界点，分界点类型: {cutoff_element.name}")
+                logger.debug(f"WARNING: 无法在原始HTML中找到分界点，分界点类型: {cutoff_element.name}")
                 logger.debug(f"DEBUG: 分界点内容预览: {cutoff_str[:200]}...")
                 logger.debug(f"DEBUG: 原始HTML长度: {len(html_content)}")
                 text_content = clean_text(cutoff_element.get_text())
@@ -1033,7 +1047,6 @@ def clean_html_content_with_split(html_content: str) -> str:
     header_html, content_html = split_header_and_content_v2(html_content)
 
     cleand_header_html = clean_html_content_advanced(header_html)
-    
     cleaned_content_html = clean_html_content_advanced(content_html)
 
     content_md = html_to_markdown_simple(cleaned_content_html)
@@ -3135,7 +3148,11 @@ def clean_html_content_advanced_two(html_content: str) -> str:
         for tag in soup.find_all(True):
             clean_attributes(tag)
 
-         
+        for img in soup.find_all('img'):
+            if img:
+                src = img.get('src','')
+                if not src or 'base64' in src.lower() or 'data:image' in src.lower():
+                    img.decompose()         
         for table in soup.find_all('table'):
             cleaned_table = clean_table_html(str(table))
             table.replace_with(BeautifulSoup(cleaned_table, 'html.parser'))
@@ -3660,12 +3677,12 @@ async def extract_html_to_markdown(input_data: HTMLInput):
 import os
 import glob
 
-def start_server(host: str = "0.0.0.0", port: int = 8321):
+def start_server(host: str = "0.0.0.0", port: int = 8101):
     uvicorn.run(app, host=host, port=port,log_level="critical",access_log=False)
     # log_level="critical"
 if __name__ == "__main__":
     import sys
     
     if len(sys.argv) > 1 and sys.argv[1] == "api":
-        port = int(os.getenv("PORT", 8321))
+        port = int(os.getenv("PORT", 8101))
         start_server(port=port)
