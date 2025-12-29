@@ -66,46 +66,35 @@ class CustomMarkdownConverter(MarkdownConverter):
 
         return f'\n{html_output}\n'
     def convert_source(self,el,text,convert_as_inline=False,**kwargs):
-        # html_output = str(el)
-        # return f'\n{html_output}\n'
+
         return ""
 
     def convert_button(self, el, text, convert_as_inline=False, **kwargs):
         src = el.get('path')
         
-        # 定义音频后缀白名单
         AUDIO_EXTENSIONS = {'.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac'}
         
-        # 判断逻辑：有 src 且后缀在白名单中
         is_audio = src and any(ext in src.lower() for ext in AUDIO_EXTENSIONS)
 
         if not is_audio:
             return text 
 
-        # 是音频，执行转换
         safe_src = html.escape(src)
         audio_html = f'\n<audio controls preload="metadata"><source src="{safe_src}"></audio>\n'
         
         return audio_html
 
     def convert_audio(self, el, text, convert_as_inline=False, **kwargs):
-        """
-        处理原生 <audio> 标签，确保输出统一、带 controls 的标准格式
-        支持: 
-          - <audio src="a.mp3">
-          - <audio><source src="a.mp3"></audio>
-        """
+
         src = el.get('src')
         if not src:
-            # 尝试从子 <source> 获取
             source_tag = el.find('source', src=True)
             if source_tag:
                 src = source_tag.get('src')
 
         if not src:
-            return ""  # 无有效音频源，丢弃
+            return ""  
 
-        # 强制添加必要属性
         safe_src = html.escape(src)
         return f'\n<audio controls preload="metadata"><source src="{safe_src}"></audio>\n'
         
@@ -176,7 +165,6 @@ def delete_short_tags(soup: BeautifulSoup, tag_text: str) -> None:
                 path_attr = parent.get('path')
                 if path_attr:
                     path_lower = path_attr.lower()
-                    # 只保留包含音频文件的button（会被转换为audio标签）
                     if any(ext in path_lower for ext in ('.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac')):
                         pass
                     else:
@@ -379,29 +367,36 @@ def clean_html_content_advanced(html_content: str) -> str:
                 src = img.get('src', '')
                 if not src or 'base64' in src.lower() or 'data:image' in src.lower():
                     img.decompose()
-        for video in soup.find_all('video'):
-            parent = video.parent
-            if parent and parent.name:
-                parent.replace_with(video)
+        containers = soup.find_all('caizhikeji_iframe')
+        for container in containers:
+            video = container.find('video')
+            if video:
+                v_parent = video.parent
+                if v_parent:
+                    v_parent.replace_with(video)
 
-        mp3_links = []
-        for button in soup.find_all('button'):
-            if button.has_attr('path') and '.mp3' in button['path'].lower():
-                mp3_links.append(button['path'])
+            audio = container.find('audio')
+            if audio:
+                mp3_path = None
+                target_btn = container.find('button', attrs={'path': True})
+                
+                if target_btn and '.mp3' in target_btn['path'].lower():
+                    mp3_path = target_btn['path']
+                
+                if mp3_path:
+                    new_audio = soup.new_tag('audio', attrs={'controls': 'controls', 'preload': 'metadata'})
+                    source = soup.new_tag('source', attrs={'src': mp3_path, 'type': 'audio/mpeg'})
+                    new_audio.append(source)
 
-        for i, audio in enumerate(soup.find_all('audio')):
-            if i < len(mp3_links):
-                path = mp3_links[i]
-                new_audio = soup.new_tag('audio', attrs={'controls': '', 'preload': 'metadata'})
-                source = soup.new_tag('source', attrs={'src': path, 'type': 'audio/mpeg'})
-                new_audio.append(source)
+                    audio_parent = audio.parent
 
-                parent = audio.parent
-                if parent and parent.name:
-                    next_sibling = parent.find_next_sibling()
-                    if next_sibling:
-                        next_sibling.decompose()
-                    parent.replace_with(new_audio)    
+                    if audio_parent:
+                        audio_parent_sibling = audio_parent.find_next_sibling()
+                        if audio_parent_sibling:
+                            audio_parent_sibling.decompose()
+
+                        audio_parent.replace_with(new_audio)
+
         remove_empty_tags(soup)
 
         return str(soup)
@@ -3310,7 +3305,6 @@ def html_to_markdown_simple(html_content: str) -> str:
         return ''
 
 
-# ==================== 占位符替换相关代码 ====================
 
 IGNORED_QUERY_PARAMS: Set[str] = {
     'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
@@ -3353,16 +3347,11 @@ def normalize_url(url: str, ignore_params: Set[str] = IGNORED_QUERY_PARAMS) -> s
 
 
 class URLPlaceholderReplacer:
-    """
-    独立的URL占位符替换器
-    格式：{文件夹前缀}/{8位md5}_{8位哈希}.{扩展名}
-    """
 
     def __init__(self):
         self.placeholder_mapping = {}
 
     def is_media_url(self, url: str) -> bool:
-        """判断URL是否为媒体文件URL"""
         if not url:
             return False
 
@@ -3386,7 +3375,6 @@ class URLPlaceholderReplacer:
         return False
 
     def _generate_placeholder(self, url: str) -> str:
-        """生成占位符"""
         normalized_url = normalize_url(url)
         url_hash = hashlib.sha256(normalized_url.encode('utf-8')).hexdigest()
         md5content = url_hash[:32]
@@ -3396,7 +3384,6 @@ class URLPlaceholderReplacer:
         return placeholder
 
     def replace_urls_with_placeholders(self, html_content: str, base_url: str = "") -> str:
-        """将HTML中的媒体文件URL替换为占位符"""
         soup = BeautifulSoup(html_content, 'html.parser')
 
         def process_url(url: str) -> str:
@@ -3412,7 +3399,6 @@ class URLPlaceholderReplacer:
             url_lower = url.lower().split("?")[0]
             return url_lower.endswith('.html') or url_lower.endswith(".htm")
 
-        # 处理video标签
         for video in soup.find_all('video'):
             src = video.get('src')
             if src:
@@ -3430,7 +3416,6 @@ class URLPlaceholderReplacer:
                     self.placeholder_mapping[placeholder] = full_poster
                     video['poster'] = f"{{{{{placeholder}}}}}"
 
-        # 处理source标签
         for source in soup.find_all('source'):
             src = source.get('src')
             if src:
@@ -3440,7 +3425,6 @@ class URLPlaceholderReplacer:
                     self.placeholder_mapping[placeholder] = full_src
                     source['src'] = f"{{{{{placeholder}}}}}"
 
-        # 处理audio标签
         for audio in soup.find_all('audio'):
             src = audio.get('src')
             if src:
@@ -3450,7 +3434,6 @@ class URLPlaceholderReplacer:
                     self.placeholder_mapping[placeholder] = full_src
                     audio['src'] = f"{{{{{placeholder}}}}}"
 
-        # 处理iframe标签
         for iframe in soup.find_all('iframe'):
             src = iframe.get('src')
             if src and ('player' in src.lower() or 'video' in src.lower() or 'audio' in src.lower()):
@@ -3460,28 +3443,23 @@ class URLPlaceholderReplacer:
                     self.placeholder_mapping[placeholder] = full_src
                     iframe['src'] = f"{{{{{placeholder}}}}}"
 
-        # 处理button标签：将包含音频文件的button转换为audio标签！！markdownify不支持重写button的转换器
         for button in soup.find_all('button'):
             src = button.get('path')
             if src:
                 src_lower = src.lower()
                 full_src = process_url(src)
 
-                # 音频扩展名
                 audio_extensions = ('.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac')
 
                 if any(ext in src_lower for ext in audio_extensions):
-                    # 将button转换为audio标签
                     if not should_skip_url(full_src):
                         placeholder = self._generate_placeholder(full_src)
                         self.placeholder_mapping[placeholder] = full_src
-                        # 创建audio标签替换button
                         audio_tag = soup.new_tag('audio')
                         audio_tag['src'] = f"{{{{{placeholder}}}}}"
                         audio_tag['controls'] = 'controls'
                         button.replace_with(audio_tag)
 
-        # 处理img标签
         for img in soup.find_all('img'):
             src = img.get('src')
             if src:
@@ -3491,7 +3469,6 @@ class URLPlaceholderReplacer:
                     self.placeholder_mapping[placeholder] = full_src
                     img['src'] = f"{{{{{placeholder}}}}}"
 
-        # 处理a标签（下载链接）
         for a in soup.find_all('a'):
             href = a.get('href')
             if href and self.is_media_url(href):
@@ -3505,7 +3482,6 @@ class URLPlaceholderReplacer:
 
 
 def process_base_url(url):
-    """处理base_url，去除最后一个/后面的内容"""
     if not url:
         return ""
 
@@ -3524,12 +3500,10 @@ def process_base_url(url):
 
         return url_obj.geturl()
     except Exception as e:
-        logger.error(f"URL处理错误: {e}")
         return url
 
 
 def html_to_text(html_content: str) -> str:
-    """将HTML转换为纯文本"""
     try:
         soup = BeautifulSoup(html_content, 'html.parser')
 
@@ -3543,32 +3517,18 @@ def html_to_text(html_content: str) -> str:
         return '\n'.join(chunk for chunk in chunks if chunk)
 
     except Exception as e:
-        logger.error(f"HTML转文本时出错: {str(e)}")
         return re.sub(r'<[^>]+>', '', html_content)
 
 
 def process_with_placeholders(html_content: str, url: str = "") -> dict:
-    """
-    处理HTML内容，生成带占位符的结果
-
-    Args:
-        html_content: 原始HTML内容
-        url: 页面URL（用于处理相对路径）
-
-    Returns:
-        dict: 包含带占位符的HTML、Markdown、文本和映射关系
-    """
-    # 处理base_url
     if url:
         base_url = process_base_url(url)
     else:
         base_url = ""
 
-    # 使用URLPlaceholderReplacer替换资源URL
     replacer = URLPlaceholderReplacer()
     html_with_placeholders = replacer.replace_urls_with_placeholders(html_content, base_url)
 
-    # 转换带占位符的Markdown
     converter = CustomMarkdownConverter(
         heading_style="ATX",
         bullets="*",
@@ -3577,10 +3537,8 @@ def process_with_placeholders(html_content: str, url: str = "") -> dict:
     md_with_placeholders = converter.convert(html_with_placeholders)
     md_with_placeholders = clean_markdown_content(md_with_placeholders)
 
-    # 生成带占位符的纯文本
     text_with_placeholders = html_to_text(html_with_placeholders)
 
-    # 生成占位符映射关系（转为json数组格式）
     placeholder_mapping_list = [{"placeholder": k, "original_url": v}
                                 for k, v in replacer.placeholder_mapping.items()]
     placeholder_mapping = json.dumps(placeholder_mapping_list, ensure_ascii=False, indent=2)
@@ -3592,13 +3550,8 @@ def process_with_placeholders(html_content: str, url: str = "") -> dict:
         "placeholder_mapping": placeholder_mapping
     }
 
-# ==================== 占位符替换相关代码结束 ====================
-
-
-# FastAPI路由
 @app.get("/")
 async def root():
-    """根路径，返回API信息"""
     return {
         "message": "HTML to Markdown Content Extractor API",
         "version": "2.0.0",
@@ -3610,7 +3563,6 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    """健康检查"""
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat()
@@ -3635,29 +3587,22 @@ async def extract_html_to_markdown(input_data: HTMLInput):
         end_time = time.time()
         elapsed = end_time - start_time
 
-        # 初始化占位符相关字段
         placeholder_html = ""
         placeholder_markdown = ""
         placeholder_text = ""
         placeholder_mapping = ""
 
-        # 如果启用占位符替换服务
         if input_data.need_placeholder:
-            # 使用 cl_content_html 作为输入（清理后的HTML）
             html_for_placeholder = final_result.get('cl_content_html', '')
             if html_for_placeholder:
                 placeholder_result = process_with_placeholders(html_for_placeholder, input_data.url)
                 placeholder_html = placeholder_result.get('placeholder_html', '')
                 placeholder_markdown = placeholder_result.get('placeholder_markdown', '')
-                # placeholder_text = placeholder_result.get('placeholder_text', '')
                 placeholder_mapping = placeholder_result.get('placeholder_mapping', '')
 
         return MarkdownOutput(
-            # markdown_content=final_result.get('markdown_content', result['markdown_content']),
             html_content=final_result.get('html_content', result['html_content']),
-            # xpath=final_result.get('xpath', result['xpath']),
             status=final_result.get('status', result['status']),
-            # process_time=elapsed,
             header_content_text=final_result.get('header_content_text', ''),
             cl_content_html=final_result.get('cl_content_html', ''),
             cl_content_md=final_result.get('cl_content_md', ''),
@@ -3665,7 +3610,6 @@ async def extract_html_to_markdown(input_data: HTMLInput):
             extract_success=final_result.get('extract_success', False),
             placeholder_html=placeholder_html,
             placeholder_markdown=placeholder_markdown,
-            # placeholder_text=placeholder_text,
             placeholder_mapping=placeholder_mapping
         )
 
@@ -3679,7 +3623,6 @@ import glob
 
 def start_server(host: str = "0.0.0.0", port: int = 8101):
     uvicorn.run(app, host=host, port=port,log_level="critical",access_log=False)
-    # log_level="critical"
 if __name__ == "__main__":
     import sys
     
