@@ -368,6 +368,7 @@ def clean_html_content_advanced(html_content: str) -> str:
                 if not src or 'base64' in src.lower() or 'data:image' in src.lower():
                     img.decompose()
         containers = soup.find_all('caizhikeji_iframe')
+
         for container in containers:
             video = container.find('video')
             if video:
@@ -396,7 +397,7 @@ def clean_html_content_advanced(html_content: str) -> str:
                             audio_parent_sibling.decompose()
 
                         audio_parent.replace_with(new_audio)
-
+            container.name = 'div'
         remove_empty_tags(soup)
 
         return str(soup)
@@ -1848,7 +1849,8 @@ def find_main_content_in_cleaned_html(cleaned_body, original_body=None):
         text_length = len(get_clean_text_content_lxml(container).strip())
         classes = container.get('class', '')
         elem_id = container.get('id', '')
-        
+        if classes == 'Article Article-wz':
+            score+=60
         if text_length > 1000:  
             long_content_containers.append((container, score, text_length))
            
