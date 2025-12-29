@@ -494,39 +494,61 @@ def clean_html_content_advanced(html_content: str) -> str:
                 src = img.get('src', '')
                 if not src or 'base64' in src.lower() or 'data:image' in src.lower():
                     img.decompose()
-        # 专门清理video标签和audio标签
-        # 处理video标签：用video替换其父节点，保留视频去除无关文字
-        for video in soup.find_all('video'):
-            parent = video.parent
-            if parent and parent.name:
-                parent.replace_with(video)
+#------------------------------处理iframe里面的video和audio---------------------------------------------------- 
+        containers = soup.find_all('caizhikeji_iframe')
 
-        # 处理audio标签：获取button中的mp3链接，创建新audio并替换父节点及其后一个兄弟节点
-        # 先收集所有button的mp3链接
-        mp3_links = []
-        for button in soup.find_all('button'):
-            if button.has_attr('path') and '.mp3' in button['path'].lower():
-                mp3_links.append(button['path'])
+        for container in containers:
+            
+            # ====================
+            # Part 1: 处理 Video
+            # ====================
+            # 在圈内找 video
+            video = container.find('video')
+            if video:
+                v_parent = video.parent
+                # 只有当父级存在，且父级在 container 内部（或者是 container 本身）时才操作
+                if v_parent:
+                    # 按照你的原逻辑：直接用 video 替换掉它的父级
+                    v_parent.replace_with(video)
+            
+            # ====================
+            # Part 2: 处理 Audio
+            # ====================
+            # 在圈内找 audio
+            audio = container.find('audio')
+            
+            # 如果圈内有 audio，才去匹配同圈内的 button
+            if audio:
+                # 1. 在【当前 container 内】查找带有 mp3 路径的按钮
+                # 这样保证了 audio 和 button 是配对的
+                target_btn = container.find('button', attrs={'path': True})
+                
+                mp3_path = None
+                if target_btn and '.mp3' in target_btn['path'].lower():
+                    mp3_path = target_btn['path']
+                
+                if mp3_path:
+                    # 2. 构建新标签
+                    new_audio = soup.new_tag('audio', attrs={'controls': 'controls', 'preload': 'metadata'})
+                    source = soup.new_tag('source', attrs={'src': mp3_path, 'type': 'audio/mpeg'})
+                    new_audio.append(source)
 
-        # 用mp3链接替换audio标签
-        for i, audio in enumerate(soup.find_all('audio')):
-            if i < len(mp3_links):
-                path = mp3_links[i]
-                # 创建新的audio标签
-                new_audio = soup.new_tag('audio', attrs={'controls': '', 'preload': 'metadata'})
-                source = soup.new_tag('source', attrs={'src': path})
-                new_audio.append(source)
+                    # 3. 定位到 audio 的直接父级
+                    audio_parent = audio.parent
 
-                # 获取audio的父节点
-                parent = audio.parent
-                if parent and parent.name:
-                    # 删除父节点的后一个兄弟节点
-                    next_sibling = parent.find_next_sibling()
-                    if next_sibling:
-                        next_sibling.decompose()
-                    # 用新audio替换父节点
-                    parent.replace_with(new_audio)
+                    # 确保 parent 存在
+                    if audio_parent:
+                        # 【核心】在这里处理 audio 父级的兄弟
+                        # 删除 audio 父级的下一个兄弟容器（通常是广告或控制条）
+                        # 注意：我们要确保这个兄弟也是在 container 里面的，不过通常结构如此，直接操作即可
+                        
+                        audio_parent_sibling = audio_parent.find_next_sibling()
+                        if audio_parent_sibling:
+                            audio_parent_sibling.decompose() # 删除兄弟
 
+                        # 【核心】用新 audio 替换掉 audio 的父级
+                        audio_parent.replace_with(new_audio)
+#------------------------------------------------------------------------------------------------------------
 
         # 移除空标签
         remove_empty_tags(soup)
