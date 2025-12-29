@@ -14,51 +14,58 @@ import logging
 import os
 from logging.handlers import RotatingFileHandler
 from typing import Tuple, Set
-# import datetime
+import urllib.parse
+import hashlib
+import json
+from typing import Set
+
+from urllib.parse import parse_qs, urlencode, urlunparse
+
 # 用于测试--------------------------------------------------------------------------
-# def setup_logging():
-#     """设置日志配置 - 输出到带时间戳的日志文件 + 控制台"""
-#     # 生成时间戳文件名
-#     log_dir = "logs"
-#     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-#     log_file = os.path.join(log_dir, f"xpath_processing_{timestamp}.log")
-    
-#     # 创建日志目录
-#     os.makedirs(log_dir, exist_ok=True)
-    
-#     # Handler: 文件（可选轮转）+ 控制台
-#     file_handler = logging.FileHandler(log_file, encoding='utf-8')
-#     console_handler = logging.StreamHandler()
-    
-#     # 日志格式
-#     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-#     file_handler.setFormatter(formatter)
-#     console_handler.setFormatter(formatter)
-    
-#     # 配置 logger
-#     logging.basicConfig(
-#         level=logging.DEBUG,
-#         handlers=[file_handler, console_handler]
-#     )
-    
-#     return logging.getLogger(__name__)
-# 用于部署---------------------------------------------------------------------------
-# 配置日志 - 高并发优化版本
+import datetime
 def setup_logging():
-    """设置日志配置 - 减少IO开销"""
-    # 生产环境只记录WARNING及以上级别
-    log_level = logging.WARNING  # 从INFO改为WARNING
+    """设置日志配置 - 输出到带时间戳的日志文件 + 控制台"""
+    # 生成时间戳文件名
+    log_dir = "logs"
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = os.path.join(log_dir, f"xpath_processing_{timestamp}.log")
     
-    # 配置日志格式（简化格式）
+    # 创建日志目录
+    os.makedirs(log_dir, exist_ok=True)
+    
+    # Handler: 文件（可选轮转）+ 控制台
+    file_handler = logging.FileHandler(log_file, encoding='utf-8')
+    console_handler = logging.StreamHandler()
+    
+    # 日志格式
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(formatter)
+    console_handler.setFormatter(formatter)
+    
+    # 配置 logger
     logging.basicConfig(
-        level=log_level,
-        format='%(levelname)s - %(message)s',  # 简化格式
-        handlers=[
-            logging.StreamHandler()  # 只输出到控制台，减少文件IO
-        ]
+        level=logging.DEBUG,
+        handlers=[file_handler, console_handler]
     )
     
     return logging.getLogger(__name__)
+# 用于部署---------------------------------------------------------------------------
+# 配置日志 - 高并发优化版本
+# def setup_logging():
+#     """设置日志配置 - 减少IO开销"""
+#     # 生产环境只记录WARNING及以上级别
+#     log_level = logging.WARNING  # 从INFO改为WARNING
+    
+#     # 配置日志格式（简化格式）
+#     logging.basicConfig(
+#         level=log_level,
+#         format='%(levelname)s - %(message)s',  # 简化格式
+#         handlers=[
+#             logging.StreamHandler()  # 只输出到控制台，减少文件IO
+#         ]
+#     )
+    
+#     return logging.getLogger(__name__)
 
 
 # 初始化日志
@@ -548,6 +555,7 @@ def clean_html_content_advanced(html_content: str) -> str:
 
                         # 【核心】用新 audio 替换掉 audio 的父级
                         audio_parent.replace_with(new_audio)
+            container.name = 'div'
 #------------------------------------------------------------------------------------------------------------
 
         # 移除空标签
@@ -2576,7 +2584,7 @@ def find_main_content_in_cleaned_html(cleaned_body, original_body=None):
         elem_id = container.get('id', '')
         text_length = len(container.text_content().strip())
         child_count = len(container.xpath(".//*"))
-        
+
         logger.info(f"\n🏆 排名 #{idx} - 得分: {score}")
         logger.info(f"   标签: {container.tag}")
         logger.info(f"   类名: {classes[:80]}{'...' if len(classes) > 80 else ''}")
@@ -2610,7 +2618,9 @@ def find_main_content_in_cleaned_html(cleaned_body, original_body=None):
         text_length = len(get_clean_text_content_lxml(container).strip())
         classes = container.get('class', '')
         elem_id = container.get('id', '')
-        
+        # 这里针对上海的网站，加一个强补丁，强行扩大正文范围，把audio包含进来
+        if classes == 'Article Article-wz':
+            score+=60
         if text_length > 1000:  # 长内容阈值
             long_content_containers.append((container, score, text_length))
             logger.info(f"   ✓ 发现长内容容器: 得分={score}, 长度={text_length}")
@@ -3140,13 +3150,12 @@ def calculate_content_container_score(container):
         if interference_count >= 2:
             logger.info(f"❌ 干扰特征过多({interference_count}个)，直接返回负分: {score}")
             return score
-    
+
     # 2.2 正面内容特征 - 适当加分
     positive_content_keywords = [
         'content', 'article', 'main', 'body', 'text', 'detail', 
         'info', 'news', 'post', 'entry'
     ]
-    
     positive_count = 0
     found_positive_keywords = []
     
@@ -3629,6 +3638,7 @@ def calculate_final_score(container):
     for keyword in content_keywords:
         if keyword in classes or keyword in elem_id:
             score += 15
+
     
     return score
 
@@ -3681,19 +3691,9 @@ def calculate_main_content_score(container):
     for keyword in content_keywords:
         if keyword in classes or keyword in elem_id:
             score += 15
-    
+        classes = container.get('class', '').lower()
+
     return score
-
-
-    
-    # 检查类名
-    classes = container.get('class', '').lower()
-    if any(word in classes for word in ['content', 'article', 'detail', 'editor', 'text']):
-        score += 15
-    
-    return score
-
-
 
 def is_in_footer_area(element):
     """检查元素是否在footer区域"""
