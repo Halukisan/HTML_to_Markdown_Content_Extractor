@@ -52,22 +52,23 @@
 | 字段名 | 类型 | 必填 | 描述 | 示例值 |
 |--------|------|------|------|--------|
 | html_content | string | 是 | 待处理的HTML内容 | `"<html>...</html>"` |
-| url | string | 否 | 源页面URL（当前版本未使用） | `"https://example.com"` |
+| url | string | 是 | 源页面URL | `"https://example.com"` |
+| need_placeholder | Boolean | 是 | 表示是否启用占位符处理 | `"True"` |
 
 ### MarkdownOutput
 
 
 | 字段名 | 类型 | 描述 | 示例值 |
-|--------|------|------|--------|
-| markdown_content | string | 提取的Markdown格式正文内容 | `"# 标题\n\n正文内容..."` |
-| html_content | string | 提取的HTML格式正文内容（已清理） | `"<div><p>正文内容</p></div>"` |
-| xpath | string | 定位到内容容器的XPath表达式 | `"//div[@id='content']"` |
+|--------|------|------|--------| 
+| html_content | string | 提取后的网页html | `"<div><p>正文</p></div>"` |
 | status | string | 处理状态用于记录程序内部错误：`success` 或 `failed` | `"success"` |
-| process_time | float | 接口处理时间（秒） | `0.235` |
 | header_content_text | string | 正文之上的内容（标题、面包屑等） | `"首页 > 新闻 > 正文"` |
 | cl_content_html | string | 清理过后的正文HTML（去除标题和正文间的无关内容） | `"<div><p>清理后的正文</p></div>"` |
 | cl_content_md | string | 清理过后的正文Markdown | `"清理后的正文"` |
 | cl_content_text | string | 清理过后的正文纯文本 | `"清理后的正文"` |
+| placeholder_html | string | 清理过后的正文HTML（带占位符） | `"<div><p>清理后的正文</p></div>"` |
+| placeholder_markdown | string | 清理过后的正文Markdown（带占位符） | `"清理后的正文"` |
+| placeholder_mapping | string | 网页资源对应关系（资源占位符和资源链接对应关系） | `"[是json字符串]"` |
 | extract_success | boolean | 正文提取是否成功 | `True` |
 
 > 需要关注、使用的字段为：header_content_text、cl_content_html、cl_content_md、cl_content_text、extract_success，这些字段可能会出现以下两种情况：
@@ -86,10 +87,6 @@
 | 422 | Unprocessable Entity | 无法从HTML中提取有效内容 | `{"detail": "无法从HTML中提取有效内容"}` |
 | 500 | Internal Server Error | 服务器内部错误 | `{"detail": "服务器内部错误: 具体错误信息"}` |
 
-
-### 代码示例
-
-![alt text](image.png)
 
 ### 使用步骤：
 
@@ -204,6 +201,7 @@ setsebool -P httpd_can_network_connect 1
 
 ##  启动服务流程
 
+### 常规
 ```bash
 # 1. 启动后端服务（例如通过 deploy.sh）
 chmod +x deploy.sh
@@ -212,6 +210,12 @@ chmod +x deploy.sh
 # 2. 启动 Nginx
 systemctl start nginx
 ```
+### docker
+进入dockerdeploy文件夹下，里面有compose文件和app文件夹，
+```shell
+docker-compose up --build -d
+```
+直接启动三个容器，每个容器下有四个worker
 
 ---
 
