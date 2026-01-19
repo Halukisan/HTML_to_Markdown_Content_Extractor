@@ -298,8 +298,8 @@ def clean_html_content_advanced(html_content: str) -> str:
         tags_to_delete = [
             "已阅","字号", "打印", "关闭", "收藏","分享到微信","分享","字体","小","中","大","s92及gd格式的文件请用SEP阅读工具",
             "扫一扫在手机打开当前页", "扫一扫在手机上查看当前页面","用微信“扫一扫”","分享给您的微信好友",
-            "相关链接",'下载文字版','下载图片版','扫一扫在手机打开当前页面',"微信扫一扫：分享","上一篇","下一篇","【打印文章】","返回顶部",
-            "你的浏览器不支持video","当前位置：","微信里点“发现”，扫一下","浏览次数：","您当前的位置：",'返回上一页'
+            "相关链接",'下载文字版','下载图片版','扫一扫在手机打开当前页面',"微信扫一扫：分享","上一篇","下一篇","【打印文章】","返回顶部","回到顶部",
+            "你的浏览器不支持video","当前位置：","微信里点“发现”，扫一下","浏览次数：","您当前的位置：",'返回上一页',"您现在是游客状态"
         ]
         
         for tag_text in tags_to_delete:
@@ -3163,14 +3163,86 @@ def clean_html_content_advanced_two(html_content: str) -> str:
         return html_content
 
 import json 
-def progressResult(json_str: dict,html_content: str) -> dict:
+
+
+def fix_relative_links_in_html(html_content: str, base_url: str) -> str:
+ 
+    if not html_content or not base_url:
+        return html_content
+
+    try:
+        from bs4 import BeautifulSoup
+        import urllib.parse
+
+        processed_base_url = process_base_url(base_url)
+
+        soup = BeautifulSoup(html_content, 'html.parser')
+
+        def is_relative_path(url: str) -> bool:
+            if not url:
+                return False
+            if url.startswith('/'):
+                return True
+            if '://' not in url and not url.startswith(('javascript:', 'mailto:', 'tel:', '#', 'data:')):
+                return True
+            return False
+
+        for tag in soup.find_all('a', href=True):
+            href = tag['href']
+            if is_relative_path(href):
+                tag['href'] = urllib.parse.urljoin(processed_base_url, href)
+
+        for tag in soup.find_all('img', src=True):
+            src = tag['src']
+            if is_relative_path(src):
+                tag['src'] = urllib.parse.urljoin(processed_base_url, src)
+
+        for tag in soup.find_all('video'):
+            if tag.get('src') and is_relative_path(tag['src']):
+                tag['src'] = urllib.parse.urljoin(processed_base_url, tag['src'])
+            if tag.get('poster') and is_relative_path(tag['poster']):
+                tag['poster'] = urllib.parse.urljoin(processed_base_url, tag['poster'])
+
+        for tag in soup.find_all('audio', src=True):
+            src = tag['src']
+            if is_relative_path(src):
+                tag['src'] = urllib.parse.urljoin(processed_base_url, src)
+
+        for tag in soup.find_all('source', src=True):
+            src = tag['src']
+            if is_relative_path(src):
+                tag['src'] = urllib.parse.urljoin(processed_base_url, src)
+
+        for tag in soup.find_all('iframe', src=True):
+            src = tag['src']
+            if is_relative_path(src):
+                tag['src'] = urllib.parse.urljoin(processed_base_url, src)
+
+        for tag in soup.find_all('link', href=True):
+            href = tag['href']
+            if is_relative_path(href):
+                tag['href'] = urllib.parse.urljoin(processed_base_url, href)
+
+        for tag in soup.find_all('script', src=True):
+            src = tag['src']
+            if is_relative_path(src):
+                tag['src'] = urllib.parse.urljoin(processed_base_url, src)
+
+        return str(soup)
+
+    except Exception as e:
+        logger.error(f"处理HTML相对链接时出错: {e}")
+        return html_content
+
+def progressResult(json_str: dict, url: str = "") -> dict:
     
     try:
         markdown_content = json_str.get("markdown_content", '')
         html_contents = json_str.get("html_content", '')
         xpath = json_str.get('xpath', '')
         elapsed = json_str.get('elapsed', 0)
-
+        if url and html_contents:
+            html_contents = fix_relative_links_in_html(html_contents, url)
         result = {
             'markdown_content': markdown_content,
             'html_content': html_contents,
@@ -3194,7 +3266,7 @@ def progressResult(json_str: dict,html_content: str) -> dict:
         )
 
         if not extract_success:
-            cl_content_html = clean_html_content_advanced_two(html_content)
+            cl_content_html = clean_html_content_advanced_two(html_contents)
             cl_content_md = html_to_markdown_simple(cl_content_html)
             content_soup = BeautifulSoup(cl_content_html, 'html.parser')
             cl_content_text = clean_text(content_soup.get_text())
@@ -3362,9 +3434,8 @@ class URLPlaceholderReplacer:
         file_extensions = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
                          '.zip', '.rar', '.tar', '.gz', '.7z', '.txt', '.rtf']
         pic_extensions = ['.jpg', '.png', '.jpeg', '.webp', '.svg']
-
         url_lower = url.lower()
-
+        
         for ext in video_extensions + audio_extensions + file_extensions + pic_extensions:
             if url_lower.endswith(ext):
                 return True
@@ -3387,11 +3458,18 @@ class URLPlaceholderReplacer:
 
     def replace_urls_with_placeholders(self, html_content: str, base_url: str = "") -> str:
         soup = BeautifulSoup(html_content, 'html.parser')
-
+        def is_relative_path(url:str)->bool:
+            if not url:
+                return False
+            if url.startswith("/"):
+                return True
+            if '://' not in url and not url.startswith(('javascript:', 'mailto:', 'tel:', '#', 'data:')):
+                return True
+            return False
         def process_url(url: str) -> str:
             if not url:
                 return ""
-            if not url.startswith(('http://', 'https://')) and base_url:
+            if is_relative_path(url) and base_url:
                 url = urllib.parse.urljoin(base_url, url)
             return url
 
@@ -3473,13 +3551,17 @@ class URLPlaceholderReplacer:
 
         for a in soup.find_all('a'):
             href = a.get('href')
-            if href and self.is_media_url(href):
-                full_href = process_url(href)
-                if not should_skip_url(full_href):
-                    placeholder = self._generate_placeholder(full_href)
-                    self.placeholder_mapping[placeholder] = full_href
-                    a['href'] = f"{{{{{placeholder}}}}}"
+            if href:
+                full_href = href
+                if is_relative_path(href) and base_url:
+                    full_href = urllib.parse.urljoin(base_url, href)
+                    a['href'] = full_href
 
+                if self.is_media_url(full_href):
+                    if not should_skip_url(full_href):
+                        placeholder = self._generate_placeholder(full_href)
+                        self.placeholder_mapping[placeholder] = full_href
+                        a['href'] = f"{{{{{placeholder}}}}}"
         return str(soup)
 
 
@@ -3584,7 +3666,7 @@ async def extract_html_to_markdown(input_data: HTMLInput):
         if result['status'] == 'failed':
             raise HTTPException(status_code=422, detail="无法从HTML中提取有效内容")
 
-        final_result = progressResult(result, input_data.html_content)
+        final_result = progressResult(result, input_data.url)
 
         end_time = time.time()
         elapsed = end_time - start_time
