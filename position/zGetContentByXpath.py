@@ -22,50 +22,50 @@ from typing import Set
 from urllib.parse import parse_qs, urlencode, urlunparse
 
 # 用于测试--------------------------------------------------------------------------
-import datetime
-def setup_logging():
-    """设置日志配置 - 输出到带时间戳的日志文件 + 控制台"""
-    # 生成时间戳文件名
-    log_dir = "logs"
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_file = os.path.join(log_dir, f"xpath_processing_{timestamp}.log")
-    
-    # 创建日志目录
-    os.makedirs(log_dir, exist_ok=True)
-    
-    # Handler: 文件（可选轮转）+ 控制台
-    file_handler = logging.FileHandler(log_file, encoding='utf-8')
-    console_handler = logging.StreamHandler()
-    
-    # 日志格式
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    file_handler.setFormatter(formatter)
-    console_handler.setFormatter(formatter)
-    
-    # 配置 logger
-    logging.basicConfig(
-        level=logging.DEBUG,
-        handlers=[file_handler, console_handler]
-    )
-    
-    return logging.getLogger(__name__)
-# 用于部署---------------------------------------------------------------------------
-# 配置日志 - 高并发优化版本
+# import datetime
 # def setup_logging():
-#     """设置日志配置 - 减少IO开销"""
-#     # 生产环境只记录WARNING及以上级别
-#     log_level = logging.WARNING  # 从INFO改为WARNING
+#     """设置日志配置 - 输出到带时间戳的日志文件 + 控制台"""
+#     # 生成时间戳文件名
+#     log_dir = "logs"
+#     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+#     log_file = os.path.join(log_dir, f"xpath_processing_{timestamp}.log")
     
-#     # 配置日志格式（简化格式）
+#     # 创建日志目录
+#     os.makedirs(log_dir, exist_ok=True)
+    
+#     # Handler: 文件（可选轮转）+ 控制台
+#     file_handler = logging.FileHandler(log_file, encoding='utf-8')
+#     console_handler = logging.StreamHandler()
+    
+#     # 日志格式
+#     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+#     file_handler.setFormatter(formatter)
+#     console_handler.setFormatter(formatter)
+    
+#     # 配置 logger
 #     logging.basicConfig(
-#         level=log_level,
-#         format='%(levelname)s - %(message)s',  # 简化格式
-#         handlers=[
-#             logging.StreamHandler()  # 只输出到控制台，减少文件IO
-#         ]
+#         level=logging.DEBUG,
+#         handlers=[file_handler, console_handler]
 #     )
     
 #     return logging.getLogger(__name__)
+# 用于部署---------------------------------------------------------------------------
+# 配置日志 - 高并发优化版本
+def setup_logging():
+    """设置日志配置 - 减少IO开销"""
+    # 生产环境只记录WARNING及以上级别
+    log_level = logging.WARNING  # 从INFO改为WARNING
+    
+    # 配置日志格式（简化格式）
+    logging.basicConfig(
+        level=log_level,
+        format='%(levelname)s - %(message)s',  # 简化格式
+        handlers=[
+            logging.StreamHandler()  # 只输出到控制台，减少文件IO
+        ]
+    )
+    
+    return logging.getLogger(__name__)
 
 
 # 初始化日志
@@ -421,8 +421,8 @@ def clean_html_content_advanced(html_content: str) -> str:
         tags_to_delete = [
             "已阅","字号", "打印", "关闭", "收藏","分享到微信","分享","字体","小","中","大","s92及gd格式的文件请用SEP阅读工具",
             "扫一扫在手机打开当前页", "扫一扫在手机上查看当前页面","用微信“扫一扫”","分享给您的微信好友",
-            "相关链接",'下载文字版','下载图片版','扫一扫在手机打开当前页面',"微信扫一扫：分享","上一篇","下一篇","【打印文章】","返回顶部",
-            "你的浏览器不支持video","当前位置：","微信里点“发现”，扫一下","浏览次数：","您当前的位置：",'返回上一页'
+            "相关链接",'下载文字版','下载图片版','扫一扫在手机打开当前页面',"微信扫一扫：分享","上一篇","下一篇","【打印文章】","返回顶部","回到顶部",
+            "你的浏览器不支持video","当前位置：","微信里点“发现”，扫一下","浏览次数：","您当前的位置：",'返回上一页',"您现在是游客状态"
         ]
         
         for tag_text in tags_to_delete:
@@ -1399,7 +1399,7 @@ def split_header_and_content_v2(html_content: str) -> Tuple[str, str]:
     #         cutoff_element = table_ancestor
     # 使用beautifulsoup的方法
     if cutoff_element.name in ['tr', 'td', 'th']:
-        table = cutoff_structure.find_parent('table')
+        table = cutoff_element.find_parent('table')
         if table:
             cutoff_element = table
 
@@ -2542,14 +2542,14 @@ def find_main_content_in_cleaned_html(cleaned_body, original_body=None):
             
         score = calculate_content_container_score(container)
         
-        # 强保护：检查是否包含 logger.debugContent 或其他重要内容
+        # 强保护：检查是否包含 Content 或其他重要内容
         classes = container.get('class', '').lower()
         elem_id = container.get('id', '').lower()
         
         # 绝对保护的条件
         is_protected = (
-            'logger.debugcontent' in elem_id.lower() or  # logger.debugContent ID
-            container.xpath(".//*[@id='logger.debugContent' or @id='logger.debugcontent']") or  # 包含 logger.debugContent 子元素
+            'content' in elem_id.lower() or  # Content ID
+            container.xpath(".//*[@id='Content'] | .//*[@id='content']") or  # 包含 Content 子元素
             'bg-fff' in classes or  # 常见的内容容器类名
             'container' in classes and len(container.xpath(".//*")) > 20  # 大型容器且子元素多
         )
@@ -2995,19 +2995,6 @@ def select_best_from_same_score_containers(containers):
     
     return best_container
 
-def calculate_container_depth(container):
-    """计算容器距离body的层级深度"""
-    depth = 0
-    current = container
-    
-    # 向上遍历直到body或html
-    while current is not None and current.tag not in ['body', 'html']:
-        depth += 1
-        current = current.getparent()
-        if current is None:
-            break
-    
-    return depth
 def get_clean_text_content_lxml(container):
     """获取lxml容器的干净文本内容，排除script和style标签"""
     if container is None:
@@ -3691,8 +3678,9 @@ def calculate_main_content_score(container):
     for keyword in content_keywords:
         if keyword in classes or keyword in elem_id:
             score += 15
-        classes = container.get('class', '').lower()
-
+    classes = container.get('class', '').lower()
+    if any(word in classes for word in ['content', 'article', 'detail', 'editor', 'text']):
+        score += 15
     return score
 
 def is_in_footer_area(element):
@@ -4375,8 +4363,102 @@ def clean_html_content_advanced_two(html_content: str) -> str:
 
 
 # 2025.12.5新增
-import json 
-def progressResult(json_str: dict) -> dict:
+import json
+
+
+def fix_relative_links_in_html(html_content: str, base_url: str) -> str:
+    """
+    处理HTML内容中的所有相对链接，将其转换为完整URL
+
+    Args:
+        html_content: HTML内容
+        base_url: 基础URL
+
+    Returns:
+        处理后的HTML内容
+    """
+    if not html_content or not base_url:
+        return html_content
+
+    try:
+        from bs4 import BeautifulSoup
+        import urllib.parse
+
+        # 处理base_url，去除最后一个/后面的内容
+        processed_base_url = process_base_url(base_url)
+
+        soup = BeautifulSoup(html_content, 'html.parser')
+
+        def is_relative_path(url: str) -> bool:
+            """判断是否为相对路径（需要拼接base_url）"""
+            if not url:
+                return False
+            # 以/开头的是绝对路径相对链接（如 /abc.html）
+            if url.startswith('/'):
+                return True
+            # 不包含协议且不包含://的是相对路径（如 abc.html 或 ./abc.html）
+            if '://' not in url and not url.startswith(('javascript:', 'mailto:', 'tel:', '#', 'data:')):
+                return True
+            return False
+
+        # 处理所有可能包含URL的标签和属性
+        # a标签的href
+        for tag in soup.find_all('a', href=True):
+            href = tag['href']
+            if is_relative_path(href):
+                tag['href'] = urllib.parse.urljoin(processed_base_url, href)
+
+        # img标签的src
+        for tag in soup.find_all('img', src=True):
+            src = tag['src']
+            if is_relative_path(src):
+                tag['src'] = urllib.parse.urljoin(processed_base_url, src)
+
+        # video标签的src和poster
+        for tag in soup.find_all('video'):
+            if tag.get('src') and is_relative_path(tag['src']):
+                tag['src'] = urllib.parse.urljoin(processed_base_url, tag['src'])
+            if tag.get('poster') and is_relative_path(tag['poster']):
+                tag['poster'] = urllib.parse.urljoin(processed_base_url, tag['poster'])
+
+        # audio标签的src
+        for tag in soup.find_all('audio', src=True):
+            src = tag['src']
+            if is_relative_path(src):
+                tag['src'] = urllib.parse.urljoin(processed_base_url, src)
+
+        # source标签的src
+        for tag in soup.find_all('source', src=True):
+            src = tag['src']
+            if is_relative_path(src):
+                tag['src'] = urllib.parse.urljoin(processed_base_url, src)
+
+        # iframe标签的src
+        for tag in soup.find_all('iframe', src=True):
+            src = tag['src']
+            if is_relative_path(src):
+                tag['src'] = urllib.parse.urljoin(processed_base_url, src)
+
+        # link标签的href（用于CSS、图标等）
+        for tag in soup.find_all('link', href=True):
+            href = tag['href']
+            if is_relative_path(href):
+                tag['href'] = urllib.parse.urljoin(processed_base_url, href)
+
+        # script标签的src
+        for tag in soup.find_all('script', src=True):
+            src = tag['src']
+            if is_relative_path(src):
+                tag['src'] = urllib.parse.urljoin(processed_base_url, src)
+
+        return str(soup)
+
+    except Exception as e:
+        logger.error(f"处理HTML相对链接时出错: {e}")
+        return html_content
+
+
+def progressResult(json_str: dict, url: str = "") -> dict:
     """
     传入原本的4个字段，返回修改后的9个字段
     # 原本输出字段为:
@@ -4402,6 +4484,10 @@ def progressResult(json_str: dict) -> dict:
         html_contents = json_str.get("html_content", '')
         xpath = json_str.get('xpath', '')
         elapsed = json_str.get('elapsed', 0)
+
+        # 处理HTML中的相对链接
+        if url and html_contents:
+            html_contents = fix_relative_links_in_html(html_contents, url)
 
         # 基础结果结构
         result = {
@@ -4617,13 +4703,12 @@ class URLPlaceholderReplacer:
         if not url:
             return False
 
+        url_lower = url.lower()
         video_extensions = ['.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm', '.mkv', '.m4v']
         audio_extensions = ['.mp3', '.wav', '.flac', '.aac', '.ogg', '.wma', '.m4a']
         file_extensions = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
                          '.zip', '.rar', '.tar', '.gz', '.7z', '.txt', '.rtf']
         pic_extensions = ['.jpg', '.png', '.jpeg', '.webp', '.svg']
-
-        url_lower = url.lower()
 
         for ext in video_extensions + audio_extensions + file_extensions + pic_extensions:
             if url_lower.endswith(ext):
@@ -4650,10 +4735,23 @@ class URLPlaceholderReplacer:
         """将HTML中的媒体文件URL替换为占位符"""
         soup = BeautifulSoup(html_content, 'html.parser')
 
+        def is_relative_path(url: str) -> bool:
+            """判断是否为相对路径（需要拼接base_url）"""
+            if not url:
+                return False
+            # 以/开头的是绝对路径相对链接（如 /abc.html）
+            if url.startswith('/'):
+                return True
+            # 不包含协议且不包含://的是相对路径（如 abc.html 或 ./abc.html）
+            if '://' not in url and not url.startswith(('javascript:', 'mailto:', 'tel:', '#', 'data:')):
+                return True
+            return False
+
         def process_url(url: str) -> str:
             if not url:
                 return ""
-            if not url.startswith(('http://', 'https://')) and base_url:
+            # 只有相对路径才拼接base_url
+            if is_relative_path(url) and base_url:
                 url = urllib.parse.urljoin(base_url, url)
             return url
 
@@ -4745,12 +4843,20 @@ class URLPlaceholderReplacer:
         # 处理a标签（下载链接）
         for a in soup.find_all('a'):
             href = a.get('href')
-            if href and self.is_media_url(href):
-                full_href = process_url(href)
-                if not should_skip_url(full_href):
-                    placeholder = self._generate_placeholder(full_href)
-                    self.placeholder_mapping[placeholder] = full_href
-                    a['href'] = f"{{{{{placeholder}}}}}"
+            if href:
+                full_href = href
+                # 如果是相对路径，拼接base_url
+                if is_relative_path(href) and base_url:
+                    full_href = urllib.parse.urljoin(base_url, href)
+                    # 先更新href为完整链接
+                    a['href'] = full_href
+
+                # 只有文件类型才替换为占位符
+                if self.is_media_url(full_href):
+                    if not should_skip_url(full_href):
+                        placeholder = self._generate_placeholder(full_href)
+                        self.placeholder_mapping[placeholder] = full_href
+                        a['href'] = f"{{{{{placeholder}}}}}"
 
         return str(soup)
 
@@ -4895,7 +5001,7 @@ async def extract_html_to_markdown(input_data: HTMLInput):
             raise HTTPException(status_code=422, detail="无法从HTML中提取有效内容")
 
         # 处理结果，添加新字段
-        final_result = progressResult(result)
+        final_result = progressResult(result, input_data.url)
 
         end_time = time.time()  # 结束计时
         elapsed = end_time - start_time
