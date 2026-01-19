@@ -633,52 +633,66 @@ def process_frontend_content(url_input, html_json_input):
 
         # 处理base_url
         base_url = process_base_url(url) if url else ""
+
+        # 调用API获取结果（带占位符和不带占位符）
         html_without_holder = ""
-        # 调用API获取第二类型的结果（不带占位符）
+        md_without_holder = ""
+        text_without_holder = ""
+        html_with_placeholders = ""
+        md_with_placeholders = ""
+        text_with_placeholders = ""
+        placeholder_mapping = ""
+        header_content = ""
+        content_text = ""
+
         try:
             response = requests.post(
-                "http://192.168.182.41:8000/extract",
+                # "http://localhost:8101/extract",
+                "http://192.168.182.41:8031/extract",
                 json={
                     "html_content": html_content,
-                    "url": url
+                    "url": url,
+                    "need_placeholder": True
                 },
                 timeout=30
             )
 
             if response.status_code == 200:
-                result = response.json()
-                # 第二类型：不带占位符的结果
-                html_without_holder = result.get("cl_content_html", "")
-                md_without_holder = result.get("cl_content_md", "")
-                text_without_holder = result.get("cl_content_text", "")
+                try:
+                    result = response.json()
+
+                    # 提取各种响应字段
+                    html_content_result = result.get("html_content", "")
+                    header_content = result.get("header_content_text", "")
+                    html_without_holder = result.get("cl_content_html", "")
+                    md_without_holder = result.get("cl_content_md", "")
+                    have_content = result.get("extract_success", "")
+                    content_text = result.get("content_text", "")
+
+                    # 占位符相关字段
+                    html_with_placeholders = result.get("placeholder_html", "")
+                    md_with_placeholders = result.get("placeholder_markdown", "")
+                    placeholder_mapping = result.get("placeholder_mapping", "")
+
+                    # 生成带占位符的纯文本
+                    text_with_placeholders = html_to_text(html_with_placeholders)
+
+                    # 不带占位符的纯文本
+                    text_without_holder = result.get("cl_content_text", content_text)
+
+                except ValueError:
+                    html_without_holder = f"JSON解析失败: {response.text}"
+                    md_without_holder = f"JSON解析失败: {response.text}"
+                    text_without_holder = f"JSON解析失败: {response.text}"
             else:
                 html_without_holder = f"API调用失败: {response.status_code}"
                 md_without_holder = f"API调用失败: {response.status_code}"
                 text_without_holder = f"API调用失败: {response.status_code}"
+
         except Exception as e:
             html_without_holder = f"API调用出错: {str(e)}"
             md_without_holder = f"API调用出错: {str(e)}"
             text_without_holder = f"API调用出错: {str(e)}"
-
-        # 处理第一类型：带占位符的结果
-        replacer = URLPlaceholderReplacer()
-        # 传入base_url以正确处理相对URL
-        html_with_placeholders = replacer.replace_urls_with_placeholders(html_without_holder, base_url)
-
-        # 转换带占位符的Markdown
-        converter = CustomMarkdownConverter(
-            heading_style="ATX",
-            bullets="*",
-            strip=['script', 'style']
-        )
-        md_with_placeholders = converter.convert(html_with_placeholders)
-        md_with_placeholders = clean_markdown_content(md_with_placeholders)
-
-        # 生成带占位符的纯文本
-        text_with_placeholders = html_to_text(html_with_placeholders)
-
-        # 生成占位符映射关系
-        placeholder_mapping = json.dumps(replacer.placeholder_mapping, ensure_ascii=False, indent=2)
 
         return ("处理成功",
                 html_with_placeholders, md_with_placeholders, text_with_placeholders, placeholder_mapping,
@@ -758,11 +772,66 @@ def create_simple_gradio_interface():
 
     return interface
 
+def process_html_file(input_html_file: str = "1.html", output_prefix: str = "1", url: str = None):
+    """
+    处理HTML文件的独立函数（参考示例代码）
+
+    Args:
+        input_html_file: 输入HTML文件路径
+        output_prefix: 输出文件前缀
+        url: 可选的URL，如果不提供则使用默认值
+    """
+    # 读取HTML内容
+    with open(input_html_file, 'r', encoding='utf-8') as f:
+        html_content = f.read()
+
+    # 使用提供的URL或默认URL
+    if url is None:
+        url = "https://www.zjzwfw.gov.cn/zjservice-fe/#/workguide?localInnerCode=144f7bb3-4a56-4838-aba7-9a85da72cced"
+
+    # 调用处理函数
+    status, html_with_ph, md_with_ph, text_with_ph, ph_mapping, html_without_ph, md_without_ph, text_without_ph = process_frontend_content(url, html_content)
+
+    # 保存结果文件
+    with open(f"{output_prefix}placeholder_html.html", 'w', encoding='utf-8') as f:
+        f.write(html_with_ph)
+    with open(f"{output_prefix}placeholder_markdown.md", 'w', encoding='utf-8') as f:
+        f.write(md_with_ph)
+    with open(f"{output_prefix}placeholder_mapping.json", 'w', encoding='utf-8') as f:
+        f.write(ph_mapping)
+    with open(f"{output_prefix}cl_content_text.txt", 'w', encoding='utf-8') as f:
+        f.write(text_without_ph)
+    with open(f"{output_prefix}html_content.md", 'w', encoding='utf-8') as f:
+        f.write(md_without_ph)
+    with open(f"{output_prefix}cl_content_html.html", 'w', encoding='utf-8') as f:
+        f.write(html_without_ph)
+
+    print(f"处理完成: {status}")
+    print(f"生成的文件:")
+    print(f"  - {output_prefix}placeholder_html.html")
+    print(f"  - {output_prefix}placeholder_markdown.md")
+    print(f"  - {output_prefix}placeholder_mapping.json")
+    print(f"  - {output_prefix}cl_content_text.txt")
+    print(f"  - {output_prefix}html_content.md")
+    print(f"  - {output_prefix}cl_content_html.html")
+
+
 if __name__ == "__main__":
-    # 启动Gradio界面
-    interface = create_simple_gradio_interface()
-    interface.launch(
-        server_name="0.0.0.0",
-        server_port=7860,
-        share=False
-    )
+    import sys
+
+    # 检查命令行参数
+    if len(sys.argv) > 1 and sys.argv[1] == "--cli":
+        # 命令行模式
+        # 使用方法: python zprogressWebDemo.py --cli <input_file> <output_prefix> <url>
+        input_file = sys.argv[2] if len(sys.argv) > 2 else "1.html"
+        output_prefix = sys.argv[3] if len(sys.argv) > 3 else "1"
+        url = sys.argv[4] if len(sys.argv) > 4 else None
+        process_html_file(input_file, output_prefix, url)
+    else:
+        # 启动Gradio界面
+        interface = create_simple_gradio_interface()
+        interface.launch(
+            server_name="0.0.0.0",
+            server_port=7860,
+            share=False
+        )
