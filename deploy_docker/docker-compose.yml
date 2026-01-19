@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  app_zgetcontent_1:
+    build: ./app
+    ports:
+      - "8201:8201"
+    environment:
+      - PORT=8201
+    restart: unless-stopped
+
+  app_zgetcontent_2:
+    build: ./app
+    ports:
+      - "8202:8202"
+    environment:
+      - PORT=8202
+    restart: unless-stopped
+
+  app_zgetcontent_3:
+    build: ./app
+    ports:
+      - "8203:8203"
+    environment:
+      - PORT=8203
+    restart: unless-stopped
+# version: '3.8'
+
+# services:
+#   app_zgetcontent_1:
+#     build: ./app 
+#     ports:
+#       - "8031:8031"
+#     environment:
+#       - PORT=8031
+#     command: ["python","app.py","api"]
+#     restart: unless-stopped
