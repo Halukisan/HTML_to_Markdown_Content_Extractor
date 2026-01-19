@@ -952,7 +952,7 @@ def split_header_and_content_v2(html_content: str) -> tuple[str, str]:
 
 
     if cutoff_element.name in ['tr', 'td', 'th']:
-        table = cutoff_structure.find_parent('table')
+        table = cutoff_element.find_parent('table')
         if table:
             cutoff_element = table
 
@@ -1812,8 +1812,8 @@ def find_main_content_in_cleaned_html(cleaned_body, original_body=None):
         elem_id = container.get('id', '').lower()
         
         is_protected = (
-            'logger.debugcontent' in elem_id.lower() or  
-            container.xpath(".//*[@id='logger.debugContent' or @id='logger.debugcontent']") or  
+            'content' in elem_id.lower() or  
+            container.xpath(".//*[@id='Content'] | .//*[@id='content']") or  
             'bg-fff' in classes or  
             'container' in classes and len(container.xpath(".//*")) > 20  
         )
@@ -2096,17 +2096,6 @@ def select_best_from_same_score_containers(containers):
     
     return best_container
 
-def calculate_container_depth(container):
-    depth = 0
-    current = container
-    
-    while current is not None and current.tag not in ['body', 'html']:
-        depth += 1
-        current = current.getparent()
-        if current is None:
-            break
-    
-    return depth
 def get_clean_text_content_lxml(container):
     if container is None:
         return ""
@@ -2583,13 +2572,9 @@ def calculate_main_content_score(container):
     for keyword in content_keywords:
         if keyword in classes or keyword in elem_id:
             score += 15
-    
-    return score
-    
     classes = container.get('class', '').lower()
     if any(word in classes for word in ['content', 'article', 'detail', 'editor', 'text']):
         score += 15
-    
     return score
 
 
