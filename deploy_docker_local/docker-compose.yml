@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  api:  
+    build:
+      context: ./app
+    ports:
+      - "8201:8201"
+    environment:
+      - PORT=8201
+    command: gunicorn app:app -w 1 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8201 --log-level warning
+    restart: unless-stopped
+
+  ui:  
+    build:
+      context: ./app
+    ports:
+      - "7860:7860"
+    command: python zprogress.py
+    restart: unless-stopped
