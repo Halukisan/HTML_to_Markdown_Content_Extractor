@@ -2135,16 +2135,63 @@ def calculate_content_container_score(container):
         current = current.getparent()
         depth += 1
 
-    if container.tag.lower() in ['header', 'footer', 'nav', 'aside']:
+    if container.tag.lower() in ['header', 'footer', 'nav', 'aside','dropdown']:
         score -= 500  
         return score  
     
    
     strong_interference_keywords = [
         'header', 'footer', 'nav', 'navigation', 'menu', 'menubar', 
-        'topbar', 'bottom', 'sidebar', 'aside', 'banner', 'ad', 'advertisement'
+        'topbar', 'bottom', 'sidebar', 'aside', 'banner', 'ad', 'advertisement','dropdown','drop'
     ]
+    def count_all_links(container):
+        link_count = 0
 
+        # 1. HTML结构中的所有链接（相对+绝对都能获取）
+        all_a_tags = container.xpath(".//a[@href]")
+        link_count += len(all_a_tags)
+
+        # 2. 其他标签的链接属性
+        other_links = container.xpath(".//@href | .//@src | .//@data-src")
+        link_count += len(other_links)
+
+        # 3. 从文本中提取链接
+        extracted_text = container.text_content()
+
+        # 3.1 明确的 http/https 链接
+        url_pattern = r'https?://[^\s<>"\']+(?:/\S*)?'
+        text_urls = re.findall(url_pattern, extracted_text)
+        link_count += len(text_urls)
+
+        # 3.2 文本中的相对路径 - 基于上下文识别
+        relative_links = []
+
+        # 模式1: 明确的上下文关键词
+        context_patterns = [
+            r'(?:访问|点击|查看|打开|跳转|see|visit|click|open|go to)[：:\s]+([/\w\-./~%]+)',
+            r'(?:链接|link|url|地址)[：:\s]+([/\w\-./~%]+)',
+        ]
+        for pattern in context_patterns:
+            matches = re.findall(pattern, extracted_text, re.IGNORECASE)
+            relative_links.extend(matches)
+
+        # 模式2: Markdown格式 [文本](/path)
+        markdown_links = re.findall(r'\[[^\]]+\]\(([/\w\-./~%]+)\)', extracted_text)
+        relative_links.extend(markdown_links)
+
+        # 模式3: 看起来像路径的格式（带文件扩展名或特定结构）
+        path_like_patterns = [
+            r'(/\w+(?:/\w+)*/?(?:\.\w{2,4})?)',  # /path/to/file.html
+            r'(\.\./[\w\-./]+)',                 # ../relative/path
+            r'(\./[\w\-./]+)',                   # ./relative/path
+        ]
+        for pattern in path_like_patterns:
+            matches = re.findall(pattern, extracted_text)
+            relative_links.extend(matches)
+
+        link_count += len(relative_links)
+
+        return link_count
     def create_pattern(keyword):
         return re.compile(r'(^|[^\w-])' + re.escape(keyword) + r'([^\w-]|$)', re.IGNORECASE)
 
@@ -2204,23 +2251,21 @@ def calculate_content_container_score(container):
     header_content_count = len(found_header_keywords)
     footer_content_count = len(found_footer_keywords)
     have_muchLinks = False
-    links = container.xpath(".//a[@href]")
-    
-    if links and text_length > 0:
-        link_count = len(links)
-        link_text_total = sum(len(link.text_content().strip()) for link in links)
-        
-        links_per_100_chars = (link_count / text_length) * 10000
-        link_text_ratio = link_text_total / text_length
-        
+    link_count = count_all_links(container)
+    all_links = container.xpath(".//a")  
 
-        if link_count > 15:
+    if link_count and text_length > 0:
+        link_text_total = sum(len(link.text_content().strip()) for link in all_links)
+
+        links_per_1000_chars = (link_count / text_length) * 1000
+        link_text_ratio = link_text_total / text_length
+
+        if link_count > 20:  
             score -= 200
-        elif link_count > 5 :
-            if links_per_100_chars > 5:
-                score -= 120
-            elif links_per_100_chars > 3:
-                score -= 50
+        elif links_per_1000_chars > 10:  
+            score -= 100
+        elif link_text_ratio > 0.3:  
+            score -= 50
          
         if link_count >= 5:
             have_muchLinks = True
@@ -2233,9 +2278,6 @@ def calculate_content_container_score(container):
     except:
         pass
     is_long_content = text_length > 3000
-    
-    if is_long_content:
-        logger.info(f"✓ 检测到长文本内容({text_length}字符)，降低首尾部关键词减分力度")
     
     if header_content_count >= 5:
         if is_long_content:
@@ -2392,7 +2434,7 @@ def is_page_level_header_footer(element):
     if is_footer:
         return True
     
-    page_keywords = ['header', 'footer', 'nav', 'menu', 'topbar', 'bottom', 'top']
+    page_keywords = ['header', 'footer', 'nav', 'menu', 'topbar', 'bottom', 'top','dropdown']
     for keyword in page_keywords:
         if keyword in classes or keyword in elem_id:
             return True
@@ -2470,7 +2512,7 @@ def is_local_header_footer(element):
     classes = element.get('class', '').lower()
     elem_id = element.get('id', '').lower()
     
-    local_keywords = ['title', 'tit', 'head', 'foot', 'top', 'bottom', 'nav', 'menu']
+    local_keywords = ['title', 'tit', 'head', 'foot', 'top', 'bottom', 'nav', 'menu','dropdown']
     for keyword in local_keywords:
         if keyword in classes or keyword in elem_id:
             text_content = element.text_content().strip()
@@ -2675,7 +2717,7 @@ def find_list_container(page_tree):
                 indicator in role or tag_name == 'footer'):
                 score -= 250  
         
-        header_structure_indicators = ['header', 'nav', 'navigation', 'menu', 'topbar', 'banner', 'menubar']
+        header_structure_indicators = ['header', 'nav', 'navigation', 'menu', 'topbar', 'banner', 'menubar','dropdown']
         for indicator in header_structure_indicators:
             if (indicator in classes or indicator in elem_id or 
                 indicator in role or tag_name in ['header', 'nav','menu']):
