@@ -2252,27 +2252,20 @@ def calculate_content_container_score(container):
     footer_content_count = len(found_footer_keywords)
     have_muchLinks = False
     link_count = count_all_links(container)
-    all_links = container.xpath(".//a")  # 定义 links 变量
+    all_links = container.xpath(".//a")  
 
     if link_count and text_length > 0:
         link_text_total = sum(len(link.text_content().strip()) for link in all_links)
 
-        # 每1000字符的链接数（更直观）
         links_per_1000_chars = (link_count / text_length) * 1000
         link_text_ratio = link_text_total / text_length
 
-        logger.info(f"🔗 链接分析: {link_count}个链接, 密度={links_per_1000_chars:.2f}个/1000字符,占比={link_text_ratio:.1%}")
-
-        # 调整后的判断逻辑
-        if link_count > 20:  # 极端情况
+        if link_count > 20:  
             score -= 200
-            debug_info.append(f"❌ 链接过多(>{link_count}个): -200")
-        elif links_per_1000_chars > 10:  # 每1000字符超过10个链接
+        elif links_per_1000_chars > 10:  
             score -= 100
-            debug_info.append(f"❌ 链接密度过高({links_per_1000_chars:.1f}个/1000字符): -100")
-        elif link_text_ratio > 0.3:  # 链接文本占比超过30%
+        elif link_text_ratio > 0.3:  
             score -= 50
-            debug_info.append(f"❌ 链接文本占比过高({link_text_ratio:.1%}): -50")
          
         if link_count >= 5:
             have_muchLinks = True
@@ -2285,9 +2278,6 @@ def calculate_content_container_score(container):
     except:
         pass
     is_long_content = text_length > 3000
-    
-    if is_long_content:
-        logger.info(f"✓ 检测到长文本内容({text_length}字符)，降低首尾部关键词减分力度")
     
     if header_content_count >= 5:
         if is_long_content:
