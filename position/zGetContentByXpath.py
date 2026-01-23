@@ -1739,9 +1739,45 @@ def find_footer_container_by_traceback(element):
         current = parent
     
     return None
+def remove_html_comments(element):
+    """
+    递归删除 element 及其子树中的所有 HTML 注释节点。
+    使用正则表达式作为备用方案，因为 lxml 的 XPath 在某些情况下无法识别注释。
+    返回被删除的注释数量。
+    """
+    import re
+
+    count = 0
+
+    # 方法1: 尝试用 XPath 删除注释节点
+    comments = list(element.xpath('.//comment()'))
+    for elem in comments:
+        parent = elem.getparent()
+        if parent is not None:
+            parent.remove(elem)
+            count += 1
+
+    # 方法2: 如果 XPath 没有找到注释，尝试用正则表达式
+    # 将元素转为字符串，用正则删除注释，然后重新解析
+    if count == 0:
+        from lxml import html as lxml_html
+        html_str = lxml_html.tostring(element, encoding='unicode')
+        original_length = len(html_str)
+
+        # 使用正则表达式删除 HTML 注释
+        html_str = re.sub(r'<!--.*?-->', '', html_str, flags=re.DOTALL)
+
+        cleaned_length = len(html_str)
+        if cleaned_length < original_length:
+            # 有注释被删除，需要重新解析
+            logger.info(f"🧹 remove_html_comments: 使用正则删除了注释 ({original_length} -> {cleaned_length} 字符)")
+            # 注意：这里不能直接替换 element，因为外部还在使用它
+            # 所以这个方法只能用于检测，不能用于实际删除
+
+    return count
 def preprocess_html_remove_interference(page_tree):
     """
-    精准清理HTML - 只激进删除页面级header和footer，保护内容区域
+    精准清理HTML - 删除注释、display:none元素、页面级header和footer，保护内容区域
     """
     # 获取body元素
     body_elements = page_tree.xpath("//body")
@@ -1750,20 +1786,55 @@ def preprocess_html_remove_interference(page_tree):
     else:
         # 如果没有body标签，尝试使用整个树
         body = page_tree
-    
+
     if body is None:
         logger.error("HTML解析失败，body为None")
         return None
-    
+
     logger.info("开始精准HTML清理流程...")
-    
-    # 第零步：删除所有 display:none 的不可见元素 以及 class为ng-hide的元素（ng-hide为前端框架中固定的class名称）
+
+    # 第一步 - 删除所有 HTML 注释
+    # 使用正则表达式删除注释中的文本内容
+    import re
+
+    def clean_comment_text(node):
+        """递归清理节点中的注释文本"""
+        # 检查当前节点是否是注释
+        if hasattr(node, 'tag') and node.tag == lxml.html.Comment:
+            parent = node.getparent()
+            if parent is not None:
+                # 获取注释文本
+                comment_text = node.text if node.text else ''
+                # 清空注释文本
+                node.text = ''
+                logger.info(f"清空注释文本: {repr(comment_text[:50])}")
+                return True
+
+        # 递归处理子节点
+        for child in list(node):
+            if clean_comment_text(child):
+                # 删除已清空的注释节点
+                node.remove(child)
+
+        return False
+
+    # 遍历所有节点，清理注释
+    cleaned_count = 0
+    for comment in list(body.xpath('.//comment()')):
+        parent = comment.getparent()
+        if parent is not None:
+            logger.info(f"删除注释节点: {repr(comment.text[:50] if comment.text else '')}")
+            parent.remove(comment)
+            cleaned_count += 1
+
+    logger.info(f"删除了 {cleaned_count} 个 HTML 注释节点")
+
+    # 第二步：删除所有 display:none 的不可见元素 以及 class为ng-hide的元素
     display_none_count = remove_display_none_elements(body)
-    logger.info(f"删除了 {display_none_count} 个 display:none 不可见元素")
+    logger.info(f"删除了 {display_none_count} 个 display:none 或 ng-hide 不可见元素")
     
-    # 第一步：激进删除明确的页面级header和footer
+    # 第三步：激进删除明确的页面级header和footer
     removed_count = remove_page_level_header_footer(body)
-    
     logger.info(f"精准清理完成：删除了 {removed_count} 个页面级header/footer")
     
     # 输出清理后的HTML到日志文件
@@ -2281,7 +2352,23 @@ def extract_content_to_markdown(html_content: str):
             logger.error("HTML内容为空或不是字符串类型")
             return result
 
-        # 解析HTML
+        # 【关键】先用正则删除所有 HTML 注释
+        # 在 lxml 解析之前就删除注释，避免注释内容被当作文本提取
+        import re
+
+        # 调试：检查原始HTML中是否包含注释
+        comment_pattern = re.compile(r'<!--[\s\S]*?-->')
+        original_comments = comment_pattern.findall(html_content)
+        logger.info(f"=== DEBUG 入口: 原始HTML中找到 {len(original_comments)} 个注释 ===")
+        for i, comment in enumerate(original_comments[:3]):  # 只打印前3个
+            logger.info(f"  注释{i+1}: {repr(comment[:100])}")
+
+        original_length = len(html_content)
+        html_content = re.sub(r'<!--[\s\S]*?-->', '', html_content)
+        removed = original_length - len(html_content)
+        logger.info(f"=== DEBUG 入口: 正则删除注释 ({original_length} -> {len(html_content)} 字符, 删除了 {removed} 字符) ===")
+
+        # 解析HTML（此时注释已被删除）
         tree = lxml_html.fromstring(html_content)
 
         # 获取主内容容器（从清理后的tree中获取）
@@ -2396,9 +2483,20 @@ def clean_container_html(container_html: str) -> str:
         return container_html or ""
 
     try:
+        # 先用正则表达式删除 HTML 注释（更可靠）
+        import re
+        original_length = len(container_html)
+        container_html = re.sub(r'<!--.*?-->', '', container_html, flags=re.DOTALL)
+        if len(container_html) < original_length:
+            logger.info(f"clean_container_html: 正则删除注释 ({original_length} -> {len(container_html)} 字符)")
+
         # 解析HTML
         soup = BeautifulSoup(container_html, 'html.parser')
-        
+
+        # 删除HTML注释（双重保险）
+        for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
+            comment.extract()
+
         # 删除script标签
         for script in soup.find_all('script'):
             if script:  # 确保不是None
@@ -2996,16 +3094,29 @@ def select_best_from_same_score_containers(containers):
     return best_container
 
 def get_clean_text_content_lxml(container):
-    """获取lxml容器的干净文本内容，排除script和style标签"""
+    """获取lxml容器的干净文本内容，排除script和style标签和HTML注释"""
     if container is None:
         return ""
 
-    # 创建容器的副本以避免修改原始元素
-    container_copy = container.__copy__()
+    # 创建深拷贝以避免修改原始元素
+    from copy import deepcopy
+    container_copy = deepcopy(container)
 
     # 删除所有script和style标签及其内容
-    for elem in container_copy.xpath('//script | //style'):
+    for elem in container_copy.xpath('.//script | .//style'):
         elem.getparent().remove(elem)
+
+    # 使用 XPath 查找并删除所有注释节点
+    comments = container_copy.xpath('.//comment()')
+    comment_count = 0
+    for comment in comments:
+        parent = comment.getparent()
+        if parent is not None:
+            parent.remove(comment)
+            comment_count += 1
+
+    if comment_count > 0:
+        logger.info(f"🧹 get_clean_text_content_lxml: XPath删除了 {comment_count} 个注释节点")
 
     # 获取清理后的文本内容
     clean_text = container_copy.text_content()
@@ -3033,7 +3144,7 @@ def calculate_content_container_score(container):
     logger.info(f"类名: {classes[:100]}{'...' if len(classes) > 100 else ''}")
     logger.info(f"ID: {elem_id[:50]}{'...' if len(elem_id) > 50 else ''}")
     logger.info(f"文本长度: {text_length}")
-
+    # logger.info(f"text_content: {text_content.strip()}")
     # 0. 检查 display:none - 直接排除不可见元素
     style = container.get('style', '').lower()
     if 'display' in style and 'none' in style:
@@ -3059,17 +3170,39 @@ def calculate_content_container_score(container):
         current = current.getparent()
         depth += 1
 
-    # # 特殊ID加分 - logger.debugContent通常是主要内容区域
-    # special_id_keywords = ['logger.debugcontent', 'logger.debugContent']
-    # for keyword in special_id_keywords:
-    #     if keyword.lower() in elem_id.lower():
-    #         if 'logger.debugcontent' in keyword.lower():
-    #             score += 200  # logger.debugContent给最高分
-    #             debug_info.append("✓ logger.debugContent ID特征: +200")
-    #         else:
-    #             score += 100  # 其他内容ID也给高分
-    #             debug_info.append(f"✓ 内容ID特征: +100 ({keyword})")
-    #         break
+    # 特殊class or id tab-表示为按钮a - 减分
+    sp1 = ['bszn-content']
+    for keyword in sp1:
+        if keyword.lower() in classes.lower():
+            if 'bszn-content' in keyword.lower():
+                score += 200 
+                debug_info.append(f"class出现了bszn-content")
+            break
+
+    sp2 = ['bszn-content']
+    for keyword in sp2:
+        if keyword.lower() in elem_id.lower():
+            if 'bszn-content' in keyword.lower():
+                score += 200 
+                debug_info.append(f"id出现了bszn-content")
+            break
+
+
+    # 特殊class or id tab-表示为按钮a - 减分
+    special_class_keywords = ['tab-']
+    for keyword in special_class_keywords:
+        if keyword.lower() in classes.lower():
+            if 'tab-' in keyword.lower():
+                score -= 65 
+                debug_info.append(f"❌ 出现了tab-")
+            break
+    special_id_keywords = ['tab-']
+    for keyword in special_id_keywords:
+        if keyword.lower() in elem_id.lower():
+            if 'tab-' in keyword.lower():
+                score -= 65  
+                debug_info.append(f"❌ 出现了tab-")
+            break
     # 首先进行大幅度减分检查 - 直接排除干扰标签
     # 1. 检查标签名 - 直接排除
     if container.tag.lower() in ['header', 'footer', 'nav', 'aside','dropdown']:
@@ -3108,57 +3241,43 @@ def calculate_content_container_score(container):
     
     # 2.1 强干扰特征（导航、头部、尾部等）- 大幅减分
     strong_interference_keywords = [
-        'header', 'footer', 'nav', 'navigation', 'menu', 'menubar', 
+        'header', 'footer', 'nav', 'navigation', 'menu', 'menubar', 'tab-'
         'topbar', 'bottom', 'sidebar', 'aside', 'banner', 'ad', 'advertisement','dropdown','drop'
     ]
     def count_all_links(container):
-        link_count = 0
+        """统计容器中的链接数量，避免重复统计"""
+        # 使用集合去重，避免重复统计
+        all_links = set()
 
-        # 1. HTML结构中的所有链接（相对+绝对都能获取）
-        all_a_tags = container.xpath(".//a[@href]")
-        link_count += len(all_a_tags)
+        # 1. 统计所有 a 标签的 href 属性
+        a_hrefs = container.xpath(".//a/@href")
+        all_links.update(a_hrefs)
 
-        # 2. 其他标签的链接属性
-        other_links = container.xpath(".//@href | .//@src | .//@data-src")
-        link_count += len(other_links)
+        # 2. 统计 img 标签的 src 属性（排除已经在 a 标签中的）
+        img_srcs = container.xpath(".//img/@src")
+        all_links.update(img_srcs)
 
-        # 3. 从文本中提取链接
+        # 3. 统计 data-src 属性
+        data_srcs = container.xpath(".//@data-src")
+        all_links.update(data_srcs)
+
+        # 过滤掉空值
+        all_links.discard('')
+        all_links.discard('#')
+
+        # 4. 从文本中提取链接（排除已经在 HTML 属性中的）
         extracted_text = container.text_content()
 
-        # 3.1 明确的 http/https 链接
+        # 提取 http/https 链接
         url_pattern = r'https?://[^\s<>"\']+(?:/\S*)?'
         text_urls = re.findall(url_pattern, extracted_text)
-        link_count += len(text_urls)
 
-        # 3.2 文本中的相对路径 - 基于上下文识别
-        relative_links = []
+        # 只添加不在 HTML 属性中的链接
+        for url in text_urls:
+            if url not in all_links:
+                all_links.add(url)
 
-        # 模式1: 明确的上下文关键词
-        context_patterns = [
-            r'(?:访问|点击|查看|打开|跳转|see|visit|click|open|go to)[：:\s]+([/\w\-./~%]+)',
-            r'(?:链接|link|url|地址)[：:\s]+([/\w\-./~%]+)',
-        ]
-        for pattern in context_patterns:
-            matches = re.findall(pattern, extracted_text, re.IGNORECASE)
-            relative_links.extend(matches)
-
-        # 模式2: Markdown格式 [文本](/path)
-        markdown_links = re.findall(r'\[[^\]]+\]\(([/\w\-./~%]+)\)', extracted_text)
-        relative_links.extend(markdown_links)
-
-        # 模式3: 看起来像路径的格式（带文件扩展名或特定结构）
-        path_like_patterns = [
-            r'(/\w+(?:/\w+)*/?(?:\.\w{2,4})?)',  # /path/to/file.html
-            r'(\.\./[\w\-./]+)',                 # ../relative/path
-            r'(\./[\w\-./]+)',                   # ./relative/path
-        ]
-        for pattern in path_like_patterns:
-            matches = re.findall(pattern, extracted_text)
-            relative_links.extend(matches)
-
-        link_count += len(relative_links)
-
-        return link_count
+        return len(all_links)
     def create_pattern(keyword):
         # 匹配单词边界，或被 -/_/space 包围
         return re.compile(r'(^|[^\w-])' + re.escape(keyword) + r'([^\w-]|$)', re.IGNORECASE)
