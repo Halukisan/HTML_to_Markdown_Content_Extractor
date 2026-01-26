@@ -623,9 +623,14 @@ def html_to_text(html_content: str) -> str:
         # 返回原始HTML的安全版本
         return re.sub(r'<[^>]+>', '', html_content)
 
-def process_frontend_content(url_input, html_json_input):
+def process_frontend_content(url_input, html_json_input, xpath_input=""):
     """
     前端处理函数
+
+    Args:
+        url_input: URL地址
+        html_json_input: HTML内容
+        xpath_input: 可选的xpath参数，如果提供则直接使用xpath获取内容
     """
     try:
         html_content = html_json_input
@@ -635,24 +640,29 @@ def process_frontend_content(url_input, html_json_input):
         base_url = process_base_url(url) if url else ""
 
         # 调用API获取结果（带占位符和不带占位符）
-        html_without_holder = ""
-        md_without_holder = ""
-        text_without_holder = ""
-        html_with_placeholders = ""
-        md_with_placeholders = ""
-        text_with_placeholders = ""
-        placeholder_mapping = ""
+        html_content_result = ""
         header_content = ""
+        cl_content_html = ""
+        cl_content_md = ""
+        have_content = ""
         content_text = ""
+        placeholder_html = ""
+        placeholder_md = ""
+        placeholder_map = ""
 
         try:
+            xpath_str = ""
+            # 如果提供了xpath，添加到请求中
+            if xpath_input and xpath_input.strip():
+                xpath_str = xpath_input.strip()
+
             response = requests.post(
                 "http://api:8201/extract",
-                # "http://192.168.182.41:8031/extract",
                 json={
                     "html_content": html_content,
-                    "url": url,
-                    "need_placeholder": True
+                    "url":url,
+                    "need_placeholder":True,
+                    "xpath":xpath_str
                 },
                 timeout=30
             )
@@ -661,45 +671,33 @@ def process_frontend_content(url_input, html_json_input):
                 try:
                     result = response.json()
 
-                    # 提取各种响应字段
+                    # 提取各种响应字段（与后端返回字段一致）
                     html_content_result = result.get("html_content", "")
                     header_content = result.get("header_content_text", "")
-                    html_without_holder = result.get("cl_content_html", "")
-                    md_without_holder = result.get("cl_content_md", "")
+                    cl_content_html = result.get("cl_content_html", "")
+                    cl_content_md = result.get("cl_content_md", "")
                     have_content = result.get("extract_success", "")
                     content_text = result.get("content_text", "")
 
                     # 占位符相关字段
-                    html_with_placeholders = result.get("placeholder_html", "")
-                    md_with_placeholders = result.get("placeholder_markdown", "")
-                    placeholder_mapping = result.get("placeholder_mapping", "")
-
-                    # 生成带占位符的纯文本
-                    text_with_placeholders = html_to_text(html_with_placeholders)
-
-                    # 不带占位符的纯文本
-                    text_without_holder = result.get("cl_content_text", content_text)
+                    placeholder_html = result.get("placeholder_html", "")
+                    placeholder_md = result.get("placeholder_markdown", "")
+                    placeholder_map = result.get("placeholder_mapping", "")
 
                 except ValueError:
-                    html_without_holder = f"JSON解析失败: {response.text}"
-                    md_without_holder = f"JSON解析失败: {response.text}"
-                    text_without_holder = f"JSON解析失败: {response.text}"
+                    have_content = f"JSON解析失败"
             else:
-                html_without_holder = f"API调用失败: {response.status_code}"
-                md_without_holder = f"API调用失败: {response.status_code}"
-                text_without_holder = f"API调用失败: {response.status_code}"
+                have_content = f"API调用失败: {response.status_code}"
 
         except Exception as e:
-            html_without_holder = f"API调用出错: {str(e)}"
-            md_without_holder = f"API调用出错: {str(e)}"
-            text_without_holder = f"API调用出错: {str(e)}"
+            have_content = f"API调用出错: {str(e)}"
 
-        return ("处理成功",
-                html_with_placeholders, md_with_placeholders, text_with_placeholders, placeholder_mapping,
-                html_without_holder, md_without_holder, text_without_holder)
+        return (have_content,
+                placeholder_html, placeholder_md, placeholder_map,
+                header_content, cl_content_html, cl_content_md, content_text)
 
     except Exception as e:
-        return f"处理出错: {str(e)}", "", "", "", "", "", "",""
+        return f"处理出错: {str(e)}", "", "", "", "", "", "", ""
 
 def create_simple_gradio_interface():
     """
@@ -713,23 +711,31 @@ def create_simple_gradio_interface():
             with gr.Column(scale=1):
                 gr.Markdown("## 输入")
 
-                # 小的URL输入框
+                # URL输入框
                 url_input = gr.Textbox(
                     label="URL",
                     placeholder="输入URL",
                     lines=1
                 )
 
-                # 大的HTML输入框
+                # XPath输入框
+                xpath_input = gr.Textbox(
+                    label="XPath (可选)",
+                    placeholder="输入XPath（如：//div[@class='content']），留空则自动定位正文",
+                    lines=2
+                )
+
+                # HTML输入框
                 html_input = gr.Textbox(
                     label="HTML内容",
                     placeholder='输入HTML',
-                    lines=25
+                    lines=20
                 )
 
                 process_btn = gr.Button("处理", variant="primary", size="lg")
 
-                status = gr.Textbox(label="状态", interactive=False)
+                # 状态输出
+                status_output = gr.Textbox(label="状态", interactive=False)
 
             # 右侧输出面板
             with gr.Column(scale=2):
@@ -743,78 +749,34 @@ def create_simple_gradio_interface():
                                 placeholder_html = gr.Code(language="html", lines=20)
                             with gr.TabItem("Markdown"):
                                 placeholder_md = gr.Code(language="markdown", lines=20)
-                            with gr.TabItem("文本"):
-                                placeholder_text = gr.Code(language="markdown", lines=20)
                             with gr.TabItem("映射"):
                                 placeholder_map = gr.Code(language="json", lines=20)
 
                     # 不带占位符标签页
                     with gr.TabItem("不带占位符"):
                         with gr.Tabs():
+                            with gr.TabItem("Header"):
+                                header_content = gr.Textbox(lines=10)
                             with gr.TabItem("HTML"):
-                                no_placeholder_html = gr.Code(language="html", lines=20)
+                                cl_content_html = gr.Code(language="html", lines=20)
                             with gr.TabItem("Markdown"):
-                                no_placeholder_md = gr.Code(language="markdown", lines=20)
+                                cl_content_md = gr.Code(language="markdown", lines=20)
                             with gr.TabItem("文本"):
-                                no_placeholder_text = gr.Code(language="markdown", lines=20)
+                                content_text = gr.Textbox(lines=20)
 
         # 绑定处理函数
         process_btn.click(
             fn=process_frontend_content,
-            inputs=[url_input, html_input],
+            inputs=[url_input, html_input, xpath_input],
             outputs=[
-                status,
-                placeholder_html, placeholder_md, placeholder_text, placeholder_map,
-                no_placeholder_html, no_placeholder_md, no_placeholder_text
+                status_output,
+                placeholder_html, placeholder_md, placeholder_map,
+                header_content, cl_content_html, cl_content_md, content_text
             ]
         )
 
 
     return interface
-
-def process_html_file(input_html_file: str = "1.html", output_prefix: str = "1", url: str = None):
-    """
-    处理HTML文件的独立函数（参考示例代码）
-
-    Args:
-        input_html_file: 输入HTML文件路径
-        output_prefix: 输出文件前缀
-        url: 可选的URL，如果不提供则使用默认值
-    """
-    # 读取HTML内容
-    with open(input_html_file, 'r', encoding='utf-8') as f:
-        html_content = f.read()
-
-    # 使用提供的URL或默认URL
-    if url is None:
-        url = "https://www.zjzwfw.gov.cn/zjservice-fe/#/workguide?localInnerCode=144f7bb3-4a56-4838-aba7-9a85da72cced"
-
-    # 调用处理函数
-    status, html_with_ph, md_with_ph, text_with_ph, ph_mapping, html_without_ph, md_without_ph, text_without_ph = process_frontend_content(url, html_content)
-
-    # 保存结果文件
-    with open(f"{output_prefix}placeholder_html.html", 'w', encoding='utf-8') as f:
-        f.write(html_with_ph)
-    with open(f"{output_prefix}placeholder_markdown.md", 'w', encoding='utf-8') as f:
-        f.write(md_with_ph)
-    with open(f"{output_prefix}placeholder_mapping.json", 'w', encoding='utf-8') as f:
-        f.write(ph_mapping)
-    with open(f"{output_prefix}cl_content_text.txt", 'w', encoding='utf-8') as f:
-        f.write(text_without_ph)
-    with open(f"{output_prefix}html_content.md", 'w', encoding='utf-8') as f:
-        f.write(md_without_ph)
-    with open(f"{output_prefix}cl_content_html.html", 'w', encoding='utf-8') as f:
-        f.write(html_without_ph)
-
-    print(f"处理完成: {status}")
-    print(f"生成的文件:")
-    print(f"  - {output_prefix}placeholder_html.html")
-    print(f"  - {output_prefix}placeholder_markdown.md")
-    print(f"  - {output_prefix}placeholder_mapping.json")
-    print(f"  - {output_prefix}cl_content_text.txt")
-    print(f"  - {output_prefix}html_content.md")
-    print(f"  - {output_prefix}cl_content_html.html")
-
 
 if __name__ == "__main__":
     import sys
