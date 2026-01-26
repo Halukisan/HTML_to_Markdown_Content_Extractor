@@ -1553,6 +1553,7 @@ class HTMLInput(BaseModel):
     html_content: str
     url: str = ""  # 可选的URL字段，暂时不处理
     need_placeholder: bool = False  # 是否启用资源替换为占位符的服务
+    xpath: str = ""  # 可选的xpath参数，如果提供则直接使用xpath获取内容，跳过正文定位
 
 class MarkdownOutput(BaseModel):
     # markdown_content: str
@@ -3241,7 +3242,7 @@ def calculate_content_container_score(container):
     
     # 2.1 强干扰特征（导航、头部、尾部等）- 大幅减分
     strong_interference_keywords = [
-        'header', 'footer', 'nav', 'navigation', 'menu', 'menubar', 'tab-'
+        'header', 'footer', 'nav', 'navigation', 'menu', 'menubar', 'tab-',
         'topbar', 'bottom', 'sidebar', 'aside', 'banner', 'ad', 'advertisement','dropdown','drop'
     ]
     def count_all_links(container):
@@ -5141,10 +5142,14 @@ import time
 async def extract_html_to_markdown(input_data: HTMLInput):
     """
     从HTML内容中提取正文并转换为Markdown格式
-    
+
     Args:
         input_data: 包含HTML内容的输入数据
-        
+            - html_content: HTML内容
+            - url: 可选的URL
+            - need_placeholder: 是否启用资源替换为占位符的服务
+            - xpath: 可选的xpath参数，如果提供则直接使用xpath获取内容，跳过正文定位
+
     Returns:
         MarkdownOutput: 包含以下字段的响应
             - markdown_content: 提取的Markdown格式内容
@@ -5155,18 +5160,63 @@ async def extract_html_to_markdown(input_data: HTMLInput):
     try:
         if not input_data.html_content.strip():
             raise HTTPException(status_code=400, detail="HTML内容不能为空")
-        
+
         logger.info("开始处理HTML内容提取")
         start_time = time.time()  # 开始计时
 
-        # 提取内容并转换为Markdown
-        result = extract_content_to_markdown(input_data.html_content)
+        # 检查是否提供了xpath参数，如果提供则直接使用xpath获取内容
+        if input_data.xpath and input_data.xpath.strip():
+            logger.info(f"检测到xpath参数，跳过正文定位，直接使用xpath获取内容: {input_data.xpath}")
 
-        if result['status'] == 'failed':
-            raise HTTPException(status_code=422, detail="无法从HTML中提取有效内容")
+            # 1. 删除HTML注释（使用与extract_content_to_markdown相同的正则方法）
+            html_content = re.sub(r'<!--[\s\S]*?-->', '', input_data.html_content)
 
-        # 处理结果，添加新字段
-        final_result = progressResult(result, input_data.url)
+            # 2. 解析HTML
+            tree = lxml_html.fromstring(html_content)
+
+            # 3. 使用xpath获取元素
+            elements = tree.xpath(input_data.xpath.strip())
+
+            if not elements:
+                raise HTTPException(status_code=422, detail=f"xpath未找到任何元素: {input_data.xpath}")
+
+            # 4. 获取第一个匹配的元素
+            main_container = elements[0]
+
+            # 5. 转换为HTML字符串
+            container_html = lxml_html.tostring(main_container, encoding='unicode', pretty_print=True)
+
+            # 6. 清理HTML内容（使用现有的clean_html_content_advanced函数）
+            cleaned_content_html = clean_html_content_advanced(container_html)
+
+            # 7. 转换为Markdown（使用现有的html_to_markdown_simple函数）
+            content_md = html_to_markdown_simple(cleaned_content_html)
+
+            # 8. 提取纯文本（使用现有的clean_text函数）
+            content_soup = BeautifulSoup(cleaned_content_html, 'html.parser')
+            content_text = clean_text(content_soup.get_text())
+
+            # 9. 构建结果（直接生成final_result，跳过progressResult）
+            final_result = {
+                'html_content': container_html,
+                'xpath': input_data.xpath.strip(),
+                'status': 'success',
+                'header_content_text': '',  # 直接xpath获取，没有header
+                'cl_content_html': cleaned_content_html,
+                'cl_content_md': content_md,
+                'cl_content_text': content_text,
+                'extract_success': True
+            }
+
+        else:
+            # 原有的正文定位逻辑
+            result = extract_content_to_markdown(input_data.html_content)
+
+            if result['status'] == 'failed':
+                raise HTTPException(status_code=422, detail="无法从HTML中提取有效内容")
+
+            # 处理结果，添加新字段
+            final_result = progressResult(result, input_data.url)
 
         end_time = time.time()  # 结束计时
         elapsed = end_time - start_time
@@ -5200,15 +5250,15 @@ async def extract_html_to_markdown(input_data: HTMLInput):
 
         # 统一使用 final_result 作为数据源，确保逻辑清晰
         return MarkdownOutput(
-            # markdown_content=final_result.get('markdown_content', result['markdown_content']),
-            html_content=final_result.get('html_content', result['html_content']),
-            # xpath=final_result.get('xpath', result['xpath']),
-            status=final_result.get('status', result['status']),
+            # markdown_content=final_result.get('markdown_content', ''),
+            html_content=final_result.get('html_content', ''),
+            # xpath=final_result.get('xpath', ''),
+            status=final_result.get('status', 'success'),
             # process_time=elapsed,
             header_content_text=final_result.get('header_content_text', ''),
             cl_content_html=final_result.get('cl_content_html', ''),
             cl_content_md=final_result.get('cl_content_md', ''),
-            content_text=final_result.get('cl_content_text',''),
+            content_text=final_result.get('cl_content_text', ''),
             extract_success=final_result.get('extract_success', False),
             placeholder_html=placeholder_html,
             placeholder_markdown=placeholder_markdown,
