@@ -1060,7 +1060,8 @@ def clean_html_content_with_split(html_content: str) -> str:
 class HTMLInput(BaseModel):
     html_content: str
     url: str = ""  #
-    need_placeholder: bool = False  # 是否启用资源替换为占位符的服务 
+    need_placeholder: bool = False  # 是否启用资源替换为占位符的服务
+    xpath: str = ""  # 可选的xpath参数，如果提供则直接使用xpath获取内容，跳过正文定位 
     
 class MarkdownOutput(BaseModel):
     # markdown_content: str
@@ -1216,6 +1217,28 @@ def find_footer_container_by_traceback(element):
         current = parent
     
     return None
+
+def remove_html_comments(element):
+    count = 0
+    comments = list(element.xpath('.//comment()'))
+    for elem in comments:
+        parent = elem.getparent()
+        if parent is not None:
+            parent.remove(elem)
+            count += 1
+    if count == 0:
+        html_str = lxml_html.tostring(element,encoding='unicode')
+        original_length = len(html_str)
+
+        html_str = re.sub(r'<!--.*?-->', '', html_str, flags=re.DOTALL)
+
+        clended_length = len(html_str)
+
+        if cleaned_length < original_length:
+            logger.info(f"🧹 remove_html_comments: 正则删除注释 ({original_length} -> {clended_length} 字符)")
+    return count
+
+
 def preprocess_html_remove_interference(page_tree):
 
     body_elements = page_tree.xpath("//body")
@@ -1223,15 +1246,33 @@ def preprocess_html_remove_interference(page_tree):
         body = body_elements[0]
     else:
         body = page_tree
-    
+
     if body is None:
         return None
-    
-    
+
+    def clean_comment_text(node):
+        if hasattr(node, 'tag') and node.tag == lxml.html.Comment:
+            parent = node.getparent()
+            if parent is not None:
+                comment_text = node.text if node.text else ''
+                node.text = ''
+                return True
+
+        for child in list(node):
+            if clean_comment_text(child):
+                node.remove(child)
+
+        return False
+
+    cleaned_count = 0
+    for comment in list(body.xpath('.//comment()')):
+        parent = comment.getparent()
+        if parent is not None:
+            parent.remove(comment)
+            cleaned_count += 1
+
     display_none_count = remove_display_none_elements(body)
-    
     removed_count = remove_page_level_header_footer(body)
-    
     
     cleaned_html = lxml_html.tostring(body, encoding='unicode', pretty_print=True)
     
@@ -1620,6 +1661,14 @@ def extract_content_to_markdown(html_content: str):
         if not html_content or not isinstance(html_content, str):
             return result
 
+        comment_pattern = re.compile(r'<!--[\s\S]*?-->')
+        original_comments = comment_pattern.findall(html_content)
+
+        original_length = len(html_content)
+        html_content = re.sub(r'<!--[\s\S]*?-->', '', html_content)
+        removed = original_length - len(html_content)
+
+
         tree = lxml_html.fromstring(html_content)
 
         main_container, cleaned_body = find_article_container(tree)
@@ -1700,12 +1749,15 @@ def clean_container_html(container_html: str) -> str:
         return container_html or ""
 
     try:
-        soup = BeautifulSoup(container_html, 'html.parser')
+        original_length = len(container_html)
+        container_html = re.sub(r'<!--.*?-->', '', container_html, flags=re.DOTALL)
         
+        soup = BeautifulSoup(container_html, 'html.parser')
+        for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
+            comment.extract()
         for script in soup.find_all('script'):
             if script:  
                 script.decompose()
-        
         
         for style in soup.find_all('style'):
             if style:  
@@ -2100,10 +2152,19 @@ def get_clean_text_content_lxml(container):
     if container is None:
         return ""
 
-    container_copy = container.__copy__()
+    from copy import deepcopy
+    container_copy = deepcopy(container)
 
-    for elem in container_copy.xpath('//script | //style'):
+    for elem in container_copy.xpath('.//script | .//style'):
         elem.getparent().remove(elem)
+
+    comments = container_copy.xpath('.//comment()')
+    comment_count = 0
+    for comment in comments:
+        parent = comment.getparent()
+        if parent is not None:
+            parent.remove(comment)
+            comment_count += 1
 
     clean_text = container_copy.text_content()
     return clean_text
@@ -2134,64 +2195,67 @@ def calculate_content_container_score(container):
             return score
         current = current.getparent()
         depth += 1
+    sp1 = ['bszn-content']
+    for keyword in sp1:
+        if keyword.lower() in classes.lower():
+            if 'bszn-content' in keyword.lower():
+                score += 200 
+            break
 
+    sp2 = ['bszn-content']
+    for keyword in sp2:
+        if keyword.lower() in elem_id.lower():
+            if 'bszn-content' in keyword.lower():
+                score += 200 
+            break
+
+    special_class_keywords = ['tab-']
+    for keyword in special_class_keywords:
+        if keyword.lower() in classes.lower():
+            if 'tab-' in keyword.lower():
+                score -= 65 
+            break
+    special_id_keywords = ['tab-']
+    for keyword in special_id_keywords:
+        if keyword.lower() in elem_id.lower():
+            if 'tab-' in keyword.lower():
+                score -= 65  
+            break
+    
     if container.tag.lower() in ['header', 'footer', 'nav', 'aside','dropdown']:
         score -= 500  
         return score  
     
    
     strong_interference_keywords = [
-        'header', 'footer', 'nav', 'navigation', 'menu', 'menubar', 
+        'header', 'footer', 'nav', 'navigation', 'menu', 'menubar', 'tab-',
         'topbar', 'bottom', 'sidebar', 'aside', 'banner', 'ad', 'advertisement','dropdown','drop'
     ]
     def count_all_links(container):
-        link_count = 0
+        all_links = set()
 
-        # 1. HTML结构中的所有链接（相对+绝对都能获取）
-        all_a_tags = container.xpath(".//a[@href]")
-        link_count += len(all_a_tags)
+        a_hrefs = container.xpath(".//a/@href")
+        all_links.update(a_hrefs)
 
-        # 2. 其他标签的链接属性
-        other_links = container.xpath(".//@href | .//@src | .//@data-src")
-        link_count += len(other_links)
+        img_srcs = container.xpath(".//img/@src")
+        all_links.update(img_srcs)
 
-        # 3. 从文本中提取链接
+        data_srcs = container.xpath(".//@data-src")
+        all_links.update(data_srcs)
+
+        all_links.discard('')
+        all_links.discard('#')
+
         extracted_text = container.text_content()
 
-        # 3.1 明确的 http/https 链接
         url_pattern = r'https?://[^\s<>"\']+(?:/\S*)?'
         text_urls = re.findall(url_pattern, extracted_text)
-        link_count += len(text_urls)
 
-        # 3.2 文本中的相对路径 - 基于上下文识别
-        relative_links = []
+        for url in text_urls:
+            if url not in all_links:
+                all_links.add(url)
 
-        # 模式1: 明确的上下文关键词
-        context_patterns = [
-            r'(?:访问|点击|查看|打开|跳转|see|visit|click|open|go to)[：:\s]+([/\w\-./~%]+)',
-            r'(?:链接|link|url|地址)[：:\s]+([/\w\-./~%]+)',
-        ]
-        for pattern in context_patterns:
-            matches = re.findall(pattern, extracted_text, re.IGNORECASE)
-            relative_links.extend(matches)
-
-        # 模式2: Markdown格式 [文本](/path)
-        markdown_links = re.findall(r'\[[^\]]+\]\(([/\w\-./~%]+)\)', extracted_text)
-        relative_links.extend(markdown_links)
-
-        # 模式3: 看起来像路径的格式（带文件扩展名或特定结构）
-        path_like_patterns = [
-            r'(/\w+(?:/\w+)*/?(?:\.\w{2,4})?)',  # /path/to/file.html
-            r'(\.\./[\w\-./]+)',                 # ../relative/path
-            r'(\./[\w\-./]+)',                   # ./relative/path
-        ]
-        for pattern in path_like_patterns:
-            matches = re.findall(pattern, extracted_text)
-            relative_links.extend(matches)
-
-        link_count += len(relative_links)
-
-        return link_count
+        return len(all_links)
     def create_pattern(keyword):
         return re.compile(r'(^|[^\w-])' + re.escape(keyword) + r'([^\w-]|$)', re.IGNORECASE)
 
@@ -3688,12 +3752,58 @@ async def extract_html_to_markdown(input_data: HTMLInput):
 
         start_time = time.time()
 
-        result = extract_content_to_markdown(input_data.html_content)
+        # 检查是否提供了xpath参数，如果提供则直接使用xpath获取内容
+        if input_data.xpath and input_data.xpath.strip():
 
-        if result['status'] == 'failed':
-            raise HTTPException(status_code=422, detail="无法从HTML中提取有效内容")
+            # 1. 删除HTML注释（使用与extract_content_to_markdown相同的正则方法）
+            html_content = re.sub(r'<!--[\s\S]*?-->', '', input_data.html_content)
 
-        final_result = progressResult(result, input_data.url)
+            # 2. 解析HTML
+            tree = lxml_html.fromstring(html_content)
+
+            # 3. 使用xpath获取元素
+            elements = tree.xpath(input_data.xpath.strip())
+
+            if not elements:
+                raise HTTPException(status_code=422, detail=f"xpath未找到任何元素: {input_data.xpath}")
+
+            # 4. 获取第一个匹配的元素
+            main_container = elements[0]
+
+            # 5. 转换为HTML字符串
+            container_html = lxml_html.tostring(main_container, encoding='unicode', pretty_print=True)
+
+            # 6. 清理HTML内容（使用现有的clean_html_content_advanced函数）
+            cleaned_content_html = clean_html_content_advanced(container_html)
+
+            # 7. 转换为Markdown（使用现有的html_to_markdown_simple函数）
+            content_md = html_to_markdown_simple(cleaned_content_html)
+
+            # 8. 提取纯文本（使用现有的clean_text函数）
+            content_soup = BeautifulSoup(cleaned_content_html, 'html.parser')
+            content_text = clean_text(content_soup.get_text())
+
+            # 9. 构建结果（直接生成final_result，跳过progressResult）
+            final_result = {
+                'html_content': container_html,
+                'xpath': input_data.xpath.strip(),
+                'status': 'success',
+                'header_content_text': '',  # 直接xpath获取，没有header
+                'cl_content_html': cleaned_content_html,
+                'cl_content_md': content_md,
+                'cl_content_text': content_text,
+                'extract_success': True
+            }
+
+        else:
+            # 原有的正文定位逻辑
+            result = extract_content_to_markdown(input_data.html_content)
+
+            if result['status'] == 'failed':
+                raise HTTPException(status_code=422, detail="无法从HTML中提取有效内容")
+
+            # 处理结果，添加新字段
+            final_result = progressResult(result, input_data.url)
 
         end_time = time.time()
         elapsed = end_time - start_time
@@ -3712,8 +3822,8 @@ async def extract_html_to_markdown(input_data: HTMLInput):
                 placeholder_mapping = placeholder_result.get('placeholder_mapping', '')
 
         return MarkdownOutput(
-            html_content=final_result.get('html_content', result['html_content']),
-            status=final_result.get('status', result['status']),
+            html_content=final_result.get('html_content', ''),
+            status=final_result.get('status', 'success'),
             header_content_text=final_result.get('header_content_text', ''),
             cl_content_html=final_result.get('cl_content_html', ''),
             cl_content_md=final_result.get('cl_content_md', ''),
