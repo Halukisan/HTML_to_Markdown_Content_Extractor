@@ -623,9 +623,14 @@ def html_to_text(html_content: str) -> str:
         # 返回原始HTML的安全版本
         return re.sub(r'<[^>]+>', '', html_content)
 
-def process_frontend_content(url_input, html_json_input):
+def process_frontend_content(url_input, html_json_input, xpath_input=""):
     """
     前端处理函数
+
+    Args:
+        url_input: URL地址
+        html_json_input: HTML内容
+        xpath_input: 可选的xpath参数，如果提供则直接使用xpath获取内容
     """
     try:
         html_content = html_json_input
@@ -646,14 +651,21 @@ def process_frontend_content(url_input, html_json_input):
         content_text = ""
 
         try:
+            # 构建请求参数
+            request_data = {
+                "html_content": html_content,
+                "url": url,
+                "need_placeholder": True
+            }
+
+            # 如果提供了xpath，添加到请求中
+            if xpath_input and xpath_input.strip():
+                request_data["xpath"] = xpath_input.strip()
+
             response = requests.post(
                 # "http://localhost:8101/extract",
                 "http://192.168.182.41:8031/extract",
-                json={
-                    "html_content": html_content,
-                    "url": url,
-                    "need_placeholder": True
-                },
+                json=request_data,
                 timeout=30
             )
 
@@ -713,18 +725,25 @@ def create_simple_gradio_interface():
             with gr.Column(scale=1):
                 gr.Markdown("## 输入")
 
-                # 小的URL输入框
+                # URL输入框
                 url_input = gr.Textbox(
                     label="URL",
                     placeholder="输入URL",
                     lines=1
                 )
 
-                # 大的HTML输入框
+                # XPath输入框
+                xpath_input = gr.Textbox(
+                    label="XPath (可选)",
+                    placeholder="输入XPath（如：//div[@class='content']），留空则自动定位正文",
+                    lines=2
+                )
+
+                # HTML输入框
                 html_input = gr.Textbox(
                     label="HTML内容",
                     placeholder='输入HTML',
-                    lines=25
+                    lines=20
                 )
 
                 process_btn = gr.Button("处理", variant="primary", size="lg")
@@ -761,7 +780,7 @@ def create_simple_gradio_interface():
         # 绑定处理函数
         process_btn.click(
             fn=process_frontend_content,
-            inputs=[url_input, html_input],
+            inputs=[url_input, html_input, xpath_input],
             outputs=[
                 status,
                 placeholder_html, placeholder_md, placeholder_text, placeholder_map,
