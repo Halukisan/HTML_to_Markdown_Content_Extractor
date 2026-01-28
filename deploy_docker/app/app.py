@@ -2250,8 +2250,10 @@ def calculate_content_container_score(container):
 
         url_pattern = r'https?://[^\s<>"\']+(?:/\S*)?'
         text_urls = re.findall(url_pattern, extracted_text)
-
-        for url in text_urls:
+        relative_url_pattern = r'/[a-zA-Z0-9_/\\.-]+(?:/[a-zA-Z0-9_-]+)?\.(?:html?|php|jsp|asp|aspx|cgi|py)'
+        relative_urls = re.findall(relative_url_pattern, extracted_text)
+        all_extracted_urls = text_urls + relative_urls
+        for url in all_extracted_urls:
             if url not in all_links:
                 all_links.add(url)
 
