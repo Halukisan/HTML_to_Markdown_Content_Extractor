@@ -3273,8 +3273,15 @@ def calculate_content_container_score(container):
         url_pattern = r'https?://[^\s<>"\']+(?:/\S*)?'
         text_urls = re.findall(url_pattern, extracted_text)
 
+        # 提取相对链接（如 /jigou/bld/nh/index.html）
+        relative_url_pattern = r'/[a-zA-Z0-9_/\\.-]+(?:/[a-zA-Z0-9_-]+)?\.(?:html?|php|jsp|asp|aspx|cgi|py)'
+        relative_urls = re.findall(relative_url_pattern, extracted_text)
+
+        # 合并所有从文本中提取的链接
+        all_extracted_urls = text_urls + relative_urls
+
         # 只添加不在 HTML 属性中的链接
-        for url in text_urls:
+        for url in all_extracted_urls:
             if url not in all_links:
                 all_links.add(url)
 
