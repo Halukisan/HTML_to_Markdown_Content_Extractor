@@ -1321,9 +1321,128 @@ def remove_display_none_elements(body):
     return removed_count
 
 def remove_page_level_header_footer(body):
-
-    removed_count = 0
+    """
+    激进删除页面级的header和footer - 基于多重特征判断
+    """
+    logger.info("执行激进删除页面级header和footer...")
     
+    removed_count = 0
+
+    select_based_to_remove = []
+
+    all_containers = body.xpath(".//div | .//header | .//footer | .//nav")    
+    
+    select_keywords = {'市', '省', '县', '区', '自治州', '局', '厅', '政府',
+                       '简体', '繁体', '中文', 'english', '语言', '版本', '手机版', '电脑版'}
+
+    for container in all_containers:
+        if container in select_based_to_remove:
+            continue
+            
+        text_len = len((container.text_content() or '').strip())
+
+        selects = container.xpath(".//select")
+        if selects:
+            for select in selects:
+                options = select.xpath(".//option")
+                if len(options) < 3:
+                    continue
+
+                option_texts = [opt.text.strip() for opt in options if opt.text]
+                if not option_texts:
+                    continue
+
+                match_count = 0
+                for txt in option_texts:
+                    if any(kw in txt for kw in select_keywords):
+                        match_count += 1
+                        if match_count >= 2:  
+                            break
+
+                if match_count >= 2:
+                    select_based_to_remove.append(container)
+                    sample = ' | '.join(option_texts[:3])
+                    break  
+
+        if container not in select_based_to_remove:
+            uls = container.xpath(".//ul | .//ol")
+            for ul in uls:
+                lis = ul.xpath("./li")
+                if len(lis) < 4:
+                    continue
+
+                match_count = 0
+                for li in lis:
+                    if li.text:
+                        li_text = li.text.strip()
+                        if any(kw in li_text for kw in select_keywords):
+                            match_count += 1
+                            if match_count >= 3:
+                                break
+
+                if match_count >= 3:
+                    select_based_to_remove.append(container)
+                    sample = ' | '.join([li.text.strip() for li in lis[:3] if li.text])
+                    break
+    seen = set()
+    unique_to_remove = []
+    for elem in select_based_to_remove:
+        if elem is not None:  
+            eid = id(elem)
+            if eid not in seen:
+                seen.add(eid)
+                unique_to_remove.append(elem)
+
+    for container in unique_to_remove:
+        try:
+            if container is None or not hasattr(container, 'getparent'):
+                continue
+            
+            container_text = (container.text_content() or '').strip()
+            text_length = len(container_text)
+            
+            if text_length > 500:  
+                
+                selects_in_container = container.xpath(".//select")
+                for select in selects_in_container:
+                    select_parent = select.getparent()
+                    if select_parent is not None:
+                        select_parent_text = (select_parent.text_content() or '').strip()
+                        if len(select_parent_text) < 200:  
+                            select_parent_grandparent = select_parent.getparent()
+                            if select_parent_grandparent is not None:
+                                select_parent_grandparent.remove(select_parent)
+                                removed_count += 1
+                        else:
+                            select_parent.remove(select)
+                            removed_count += 1
+                
+                nav_uls = container.xpath(".//ul | .//ol")
+                for ul in nav_uls:
+                    lis = ul.xpath("./li")
+                    if len(lis) >= 4:  
+                        ul_text = (ul.text_content() or '').strip()
+                        nav_keyword_count = sum(1 for kw in select_keywords if kw in ul_text)
+                        if nav_keyword_count >= 3:
+                            ul_parent = ul.getparent()
+                            if ul_parent is not None:
+                                ul_parent_text = (ul_parent.text_content() or '').strip()
+                                if len(ul_parent_text) < 300:  
+                                    ul_grandparent = ul_parent.getparent()
+                                    if ul_grandparent is not None:
+                                        ul_grandparent.remove(ul_parent)
+                                        removed_count += 1
+                                else:
+                                    ul_parent.remove(ul)
+                                    removed_count += 1
+                continue
+            
+            parent = container.getparent()
+            if parent is not None:
+                parent.remove(container)
+                removed_count += 1
+        except Exception as e:
+            logger.error(f"第0轮删除时出错: {e}")
     semantic_tags = ["//header", "//footer", "//nav"]
     for tag_xpath in semantic_tags:
         elements = body.xpath(tag_xpath)
@@ -1336,8 +1455,8 @@ def remove_page_level_header_footer(body):
             except Exception as e:
                 logger.info(f"删除语义标签时出错: {e}")
     
-    top_divs = body.xpath("./div")  
-    
+    top_divs = body.xpath("./div") 
+
     containers_to_remove = []
     
     for div in top_divs:
@@ -1381,23 +1500,41 @@ def remove_page_level_header_footer(body):
             text_length = len(text_content.strip())
             
             if header_count >= 4 and text_length < 1000:
-                is_header_footer = True
+                paragraphs = div.xpath(".//p")
+                long_paragraphs = [p for p in paragraphs if len((p.text_content() or '').strip()) > 100]
+                
+                if len(long_paragraphs) <= 2:  
+                    is_header_footer = True
+                else:
+                    logger.info(f"  跳过可能的正文容器: {header_count}个header关键词但包含{len(long_paragraphs)}个长段落")
+                    
             elif footer_count >= 3 and text_length < 800:
-                is_header_footer = True
-        
+                paragraphs = div.xpath(".//p")
+                long_paragraphs = [p for p in paragraphs if len((p.text_content() or '').strip()) > 100]
+                
+                if len(long_paragraphs) <= 1:  
+                    is_header_footer = True
+                else:
+                    logger.info(f"  跳过可能的正文容器: {footer_count}个footer关键词但包含{len(long_paragraphs)}个长段落")
+
         if is_header_footer:
             containers_to_remove.append(div)
     
     for container in containers_to_remove:
         try:
+            if container is None :
+                continue
+                
             parent = container.getparent()
             if parent is not None:
                 parent.remove(container)
                 removed_count += 1
+                class_attr = container.get('class', '') if container.get('class') else ''
         except Exception as e:
             logger.error(f"删除页面级容器时出错: {e}")
     
     return removed_count
+
 
 def calculate_text_density(element):
 
