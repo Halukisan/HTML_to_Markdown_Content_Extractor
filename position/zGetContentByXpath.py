@@ -1840,9 +1840,6 @@ def preprocess_html_remove_interference(page_tree):
     
     # 输出清理后的HTML到日志文件
     cleaned_html = lxml_html.tostring(body, encoding='unicode', pretty_print=True)
-    logger.info("\n=== 清理后的HTML内容(只展示前2000字) ===")
-    logger.info(cleaned_html[:2000] + "..." if len(cleaned_html) > 2000 else cleaned_html)
-    logger.info("=== HTML内容结束 ===\n")
     
     return body
 
@@ -1911,7 +1908,151 @@ def remove_page_level_header_footer(body):
     logger.info("执行激进删除页面级header和footer...")
     
     removed_count = 0
+
+    select_based_to_remove = []
+    # ========================
+    # 第0轮：清除典型的 select-based 导航/切换块（如地区选择、语言切换）
+    # ========================
+    # 查找所有可能包含 select 的块级容器（不限于顶级）
+    all_containers = body.xpath(".//div | .//header | .//footer | .//nav")    
     
+    select_keywords = {'市', '省', '县', '区', '自治州', '局', '厅', '政府',
+                       '简体', '繁体', '中文', 'english', '语言', '版本', '手机版', '电脑版'}
+
+    for container in all_containers:
+        # 检查是否已经被标记删除
+        if container in select_based_to_remove:
+            continue
+            
+        text_len = len((container.text_content() or '').strip())
+        # if text_len > 1000:  # 太大的容器可能是主表单，跳过
+        #     continue
+
+        # 检查 select 方式的导航
+        selects = container.xpath(".//select")
+        if selects:
+            for select in selects:
+                options = select.xpath(".//option")
+                if len(options) < 3:
+                    continue
+
+                # 提取所有 option 的文本
+                option_texts = [opt.text.strip() for opt in options if opt.text]
+                if not option_texts:
+                    continue
+
+                # 统计匹配关键词的数量
+                match_count = 0
+                for txt in option_texts:
+                    if any(kw in txt for kw in select_keywords):
+                        match_count += 1
+                        if match_count >= 2:  # 至少2个选项匹配
+                            break
+
+                if match_count >= 2:
+                    select_based_to_remove.append(container)
+                    sample = ' | '.join(option_texts[:3])
+                    logger.info(f"  第0轮：发现典型<select>导航块（{len(options)} options）: {sample[:50]}...")
+                    break  # 一个 select 触发即可
+
+        # 【改动3】新增：检测 ul/li 方式（只有当前容器未被select方式标记时才检查）
+        if container not in select_based_to_remove:
+            uls = container.xpath(".//ul | .//ol")
+            for ul in uls:
+                lis = ul.xpath("./li")
+                if len(lis) < 4:
+                    continue
+
+                match_count = 0
+                for li in lis:
+                    if li.text:
+                        li_text = li.text.strip()
+                        if any(kw in li_text for kw in select_keywords):
+                            match_count += 1
+                            if match_count >= 3:
+                                break
+
+                if match_count >= 3:
+                    select_based_to_remove.append(container)
+                    sample = ' | '.join([li.text.strip() for li in lis[:3] if li.text])
+                    logger.info(f"  第0轮：发现<ul>导航块（{len(lis)} items）: {sample[:50]}...")
+                    break
+    # 去重（避免重复添加）
+    seen = set()
+    unique_to_remove = []
+    for elem in select_based_to_remove:
+        if elem is not None:  # 添加空值检查
+            eid = id(elem)
+            if eid not in seen:
+                seen.add(eid)
+                unique_to_remove.append(elem)
+
+    for container in unique_to_remove:
+        try:
+            # 添加额外的安全检查
+            if container is None or not hasattr(container, 'getparent'):
+                continue
+            
+            # 【关键修复】检查容器是否包含大量正文内容
+            container_text = (container.text_content() or '').strip()
+            text_length = len(container_text)
+            
+            # 如果容器包含大量文本内容，不要删除整个容器，而是删除其中的导航元素
+            if text_length > 500:  # 超过500字符认为可能包含正文
+                logger.info(f"  容器包含大量文本({text_length}字符)，仅删除内部导航元素而非整个容器")
+                
+                # 删除容器内的select元素
+                selects_in_container = container.xpath(".//select")
+                for select in selects_in_container:
+                    select_parent = select.getparent()
+                    if select_parent is not None:
+                        # 检查select的父元素是否只包含导航内容
+                        select_parent_text = (select_parent.text_content() or '').strip()
+                        if len(select_parent_text) < 200:  # 父元素文本较少，可以删除
+                            select_parent_grandparent = select_parent.getparent()
+                            if select_parent_grandparent is not None:
+                                select_parent_grandparent.remove(select_parent)
+                                removed_count += 1
+                                logger.info(f"    删除select父元素: <{select_parent.tag}>")
+                        else:
+                            # 只删除select本身
+                            select_parent.remove(select)
+                            removed_count += 1
+                            logger.info(f"    删除select元素: <{select.tag}>")
+                
+                # 删除容器内的导航ul/li
+                nav_uls = container.xpath(".//ul | .//ol")
+                for ul in nav_uls:
+                    lis = ul.xpath("./li")
+                    if len(lis) >= 4:  # 确认是导航列表
+                        # 检查是否包含导航关键词
+                        ul_text = (ul.text_content() or '').strip()
+                        nav_keyword_count = sum(1 for kw in select_keywords if kw in ul_text)
+                        if nav_keyword_count >= 3:
+                            ul_parent = ul.getparent()
+                            if ul_parent is not None:
+                                ul_parent_text = (ul_parent.text_content() or '').strip()
+                                if len(ul_parent_text) < 300:  # 父元素文本较少
+                                    ul_grandparent = ul_parent.getparent()
+                                    if ul_grandparent is not None:
+                                        ul_grandparent.remove(ul_parent)
+                                        removed_count += 1
+                                        logger.info(f"    删除导航ul父元素: <{ul_parent.tag}>")
+                                else:
+                                    ul_parent.remove(ul)
+                                    removed_count += 1
+                                    logger.info(f"    删除导航ul元素: <{ul.tag}>")
+                continue
+            
+            # 【原有逻辑】对于文本内容较少的容器，可以安全删除整个容器
+            parent = container.getparent()
+            if parent is not None:
+                parent.remove(container)
+                removed_count += 1
+                cls = container.get('class', '')[:30] if container.get('class') else ''
+                logger.info(f"  第0轮删除整个容器: <{container.tag}> class='{cls}' (文本长度: {text_length})")
+        except Exception as e:
+            logger.error(f"第0轮删除时出错: {e}")
     # 第一轮：删除明确的语义标签
     semantic_tags = ["//header", "//footer", "//nav"]
     for tag_xpath in semantic_tags:
@@ -1927,8 +2068,8 @@ def remove_page_level_header_footer(body):
                 logger.info(f"删除语义标签时出错: {e}")
     
     # 第二轮：删除具有强header/footer特征的顶级div容器
-    top_divs = body.xpath("./div")  # 只检查body的直接子div
-    
+    top_divs = body.xpath("./div") 
+
     containers_to_remove = []
     
     for div in top_divs:
@@ -1978,25 +2119,46 @@ def remove_page_level_header_footer(body):
             
             text_length = len(text_content.strip())
             
-            # 只有当特征词汇非常集中且容器相对较小时才删除
+            # 【加强安全检查】只有当特征词汇非常集中且容器相对较小时才删除
+            # 同时确保不是页面的主要内容容器
             if header_count >= 4 and text_length < 1000:
-                is_header_footer = True
-                logger.info(f"  发现强header内容特征: {header_count}个关键词")
+                # 额外检查：确保不包含大量段落内容
+                paragraphs = div.xpath(".//p")
+                long_paragraphs = [p for p in paragraphs if len((p.text_content() or '').strip()) > 100]
+                
+                if len(long_paragraphs) <= 2:  # 最多2个长段落
+                    is_header_footer = True
+                    logger.info(f"  发现强header内容特征: {header_count}个关键词，长段落数: {len(long_paragraphs)}")
+                else:
+                    logger.info(f"  跳过可能的正文容器: {header_count}个header关键词但包含{len(long_paragraphs)}个长段落")
+                    
             elif footer_count >= 3 and text_length < 800:
-                is_header_footer = True
-                logger.info(f"  发现强footer内容特征: {footer_count}个关键词")
-        
+                # 额外检查：确保不包含大量段落内容
+                paragraphs = div.xpath(".//p")
+                long_paragraphs = [p for p in paragraphs if len((p.text_content() or '').strip()) > 100]
+                
+                if len(long_paragraphs) <= 1:  # footer最多1个长段落
+                    is_header_footer = True
+                    logger.info(f"  发现强footer内容特征: {footer_count}个关键词，长段落数: {len(long_paragraphs)}")
+                else:
+                    logger.info(f"  跳过可能的正文容器: {footer_count}个footer关键词但包含{len(long_paragraphs)}个长段落")
+
         if is_header_footer:
             containers_to_remove.append(div)
     
     # 删除标记的容器
     for container in containers_to_remove:
         try:
+            # 添加额外的安全检查
+            if container is None :
+                continue
+                
             parent = container.getparent()
             if parent is not None:
                 parent.remove(container)
                 removed_count += 1
-                logger.info(f"  删除页面级容器: {container.tag} class='{container.get('class', '')[:30]}'")
+                class_attr = container.get('class', '') if container.get('class') else ''
+                logger.info(f"  删除页面级容器: {container.tag} class='{class_attr[:35]}'")
         except Exception as e:
             logger.error(f"删除页面级容器时出错: {e}")
     
