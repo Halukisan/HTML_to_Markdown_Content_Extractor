@@ -1,262 +1,204 @@
-> 算法已经非常稳健，切勿修改任何一个数字和字符，每一个分值的计算和确定都是大量的测试数据得到的经验。
+# HTML to Markdown Content Extractor（HTML 转 Markdown 正文提取器）
 
-# HTML to Markdown Content Extractor API 文档
+项目目标
+- 从任意网页 HTML 中自动定位并抽取“主要正文”内容，清洗（去噪、移除 header/footer/广告/导航等干扰）、修正资源链接、并导出为 HTML 和 Markdown 两种格式。
+- 支持可选的占位符替换（将资源替换为占位符并给出映射），并提供 HTTP API 与本地 Gradio 前端用于调试与人工验证。
 
+重要提示
+- 算法已经非常稳健，切勿修改任何一个数字和字符，每一个分值的计算和确定都是大量的测试数据得到的经验。
+- 见下方“注意事项”部分，关于 extract_success 等字段的语义和异常情况说明。
 
-## 接口列表
+主要特性
+- 自动正文定位（多特征打分与规则过滤）
+- 去除页面级 header/footer、注释、display:none 元素等干扰
+- 生成清理后的 HTML、对应 Markdown，以及纯文本
+- 支持通过 xpath 强制定位（如果你已有准确 xpath）
+- 支持将图片/资源替换为占位符并输出占位符与原资源映射
+- 提供 HTTP API（/、/health、/extract）与本地 Gradio 调试界面
 
-### 获取API信息
+目录结构（关键）
+- deploy_docker_local/  
+  - app/ — 服务端实现（用于本地开发/本地 Docker 部署的代码），核心逻辑位于 `app.py`，包含正文定位、clean、markdown 转换等函数。  
+  - zprogress.py — 本地 Gradio 前端与调试工具（页面输入 HTML、URL、可选 xpath；显示带/不带占位符的输出）。  
+- deploy_docker/  
+  - app/ — 面向 Docker 部署的服务代码（与 deploy_docker_local 相似，便于容器化）。  
+- requirements_updated / requirements.txt — 依赖清单（若不存在以仓库内的名称为准）  
+- deploy.sh — 一键部署脚本（本地/服务器快速部署脚本）  
+- README.md — 当前文档（项目说明与使用示例）  
+- LICENSE — MIT 协议（见仓库 LICENSE 文件）
 
-**接口地址**: `GET /`
+核心文件说明
+- deploy_docker_local/app/app.py  
+  - 包含 FastAPI 应用实例、数据模型、正文抽取核心函数（如：find_article_container、remove_page_level_header_footer、calculate_text_density、extract_content_to_markdown 等）。  
+  - 数据模型（Pydantic）示例：
+    - HTMLInput:
+      - html_content: string（必填） — 待处理的 HTML 内容
+      - url: string — 源页面 URL（用于修复相对链接）
+      - need_placeholder: boolean — 是否启用占位符处理（资源替换）
+      - xpath: string — 可选 xpath，提供则跳过自动正文定位并直接用 xpath 抽取
+    - MarkdownOutput:
+      - html_content: string — 提取后的网页 HTML（一般为正文 HTML）
+      - status: string — 内部处理状态（如 success / failed）
+      - header_content_text: string — 标题 / header 之类的内容文本（若能抽出）
+      - cl_content_html: string — 清理后的正文 HTML（不含 header）
+      - cl_content_md: string — 清理后的正文 Markdown
+      - content_text / cl_content_text: string — 清理后的正文纯文本
+      - placeholder_html / placeholder_markdown: string — 带占位符的 HTML/Markdown
+      - placeholder_mapping: string — 资源占位符到真实链接的映射（JSON 字符串）
+      - extract_success: boolean — 是否成功抽取正文（非常重要，见下面说明）
 
-**接口描述**: 获取API基本信息和可用端点列表
+- deploy_docker_local/app/zprogress.py  
+  - 提供 Gradio 前端：输入 URL / HTML / xpath，按钮触发 `process_frontend_content`，输出带占位符与不带占位符���多种格式（HTML / Markdown / 文本 / 映射等）。
 
-**请求参数**: 无
+API 接口（HTTP）
+1. GET /  
+   - 描述：返回基本 API 信息和可用端点列表  
+   - 示例响应：
+     ```json
+     {
+       "message": "HTML to Markdown Content Extractor API",
+       "version": "2.0.0",
+       "endpoints": {
+         "/extract": "POST - 提取正文",
+         "/health": "GET - 健康检查"
+       }
+     }
+     ```
 
-**响应示例**:
-```json
-{
-  "message": "HTML to Markdown Content Extractor API",
-  "version": "2.0.0",
-  "endpoints": {
-    "/extract": "POST - 提取正文",
-    "/health": "GET - 健康检查"
-  }
-}
-```
+2. GET /health  
+   - 描述：健康检查，确认服务存活  
+   - 示例响应：
+     ```json
+     {
+       "status": "healthy",
+       "timestamp": "2025-12-10T10:30:00.000000"
+     }
+     ```
 
-### 健康检查
+3. POST /extract  
+   - 描述：提取 HTML 正文并返回 HTML / Markdown / 文本 等结果  
+   - 请求体（JSON，示例）：
+     ```json
+     {
+       "html_content": "<html>...</html>",
+       "url": "https://example.com/article/123",
+       "need_placeholder": true,
+       "xpath": ""
+     }
+     ```
+   - 返回（示例结构）：
+     ```json
+     {
+       "html_content": "<div>正文 HTML</div>",
+       "status": "success",
+       "header_content_text": "文章标题或面包屑",
+       "cl_content_html": "<div><p>清理后的正文</p></div>",
+       "cl_content_md": "清理后的正文",
+       "content_text": "清理后的正文纯文本",
+       "extract_success": true,
+       "placeholder_html": "<div><img src='{{IMG_1}}'/></div>",
+       "placeholder_markdown": "![alt]({{IMG_1}})",
+       "placeholder_mapping": "{\"IMG_1\":\"https://example.com/image.jpg\"}"
+     }
+     ```
 
-**接口地址**: `GET /health`
+字段语义与异常说明（关键）
+- extract_success:
+  - True：正文抽取成功（优先使用 cl_content_html / cl_content_md / cl_content_text 作为正文结果）。
+    - 但此时 header_content_text 仍可能为空（header 抽取失败属于常见情况）。
+  - False：正文抽取失败
+    - 虽然 cl_content_html / cl_content_md / cl_content_text 可能有值，但请忽略这些值，直接使用原始输入的 html_content 作为正文。
+    - 有时 header_content_text 不为空，可能是算法将正文误判为 header（需人工或后处理修正）。
+- need_placeholder:
+  - True：服务将下载/替换页面资源（图片、视频、链接等）为占位符，并返回 placeholder_mapping（JSON 字符串），mapping 用于把占位符替换回真实资源。
+  - False：不做占位符替换，直接返回清理后的 HTML 与 Markdown。
 
-**接口描述**: 检查服务运行状态
+如何在本地运行（开发环境）
+1. 克隆仓库并进入目录：
+   ```bash
+   git clone https://github.com/Halukisan/XpathGet.git
+   cd XpathGet
+   ```
+2. 创建并激活虚拟环境（示例使用 venv）：
+   ```bash
+   python3 -m venv venv
+   . venv/bin/activate
+   ```
+3. 安装依赖（以仓库内的 requirements 文件为准）：
+   ```bash
+   pip install -r requirements_updated
+   ```
+4. 启动服务（示例使用 uvicorn）：
+   ```bash
+   # 若使用 deploy_docker_local/app/app.py 中的 FastAPI
+   uvicorn deploy_docker_local.app.app:app --host 0.0.0.0 --port 8000 --reload
+   ```
+5. 打开浏览器访问：
+   - API 文档（自动生成的 Swagger / Redoc）：http://localhost:8000/docs 或 /redoc
+   - Gradio 本地前端（若使用 zprogress 提供的界面，通常在脚本内启动的端口，请参见 zprogress.py 的运行方式）。
 
-**请求参数**: 无
+通过 curl 调用示例
+- 简单 POST 调用（不启用占位符）：
+  ```bash
+  curl -X POST "http://localhost:8000/extract" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "html_content": "<html>...</html>",
+      "url": "https://example.com/article/1",
+      "need_placeholder": false,
+      "xpath": ""
+    }'
+  ```
+- 使用 xpath 强制提取（跳过自动定位）：
+  ```bash
+  curl -X POST "http://localhost:8000/extract" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "html_content": "<html>...</html>",
+      "url": "https://example.com",
+      "need_placeholder": false,
+      "xpath": "//div[@id=\"main-article\"]"
+    }'
+  ```
 
-**响应示例**:
-```json
-{
-  "status": "healthy",
-  "timestamp": "2025-12-10T10:30:00.000000"
-}
-```
+Gradio 前端（本地调试）
+- 启动 zprogress.py 中的界面后，你可以：
+  - 在左侧输入 URL 或直接粘贴 HTML
+  - （可选）给出 xpath 强制提取
+  - 点击“处理”按钮，右侧将显示带占位符 / 不带占位符的 HTML、Markdown、纯文本与占位符映射，便于人工校验和调试
 
-### 提取HTML内容
+Docker / 部署
+- 仓库包含 deploy 脚本与 Docker 目录（`deploy_docker` / `deploy_docker_local`）用于容器化部署，典型步骤：
+  1. 编辑配置（若有）
+  2. 构建镜像（若仓库提供 Dockerfile）
+  3. 使用 deploy.sh 或自定义 docker-compose 部署
+- deploy.sh（仓库内）通常会包含启动容器、拷贝配置、设置日志滚动等操作；在生产环境请仔细检查脚本并根据需要调整。
 
-**接口地址**: `POST /extract`
+调试建议与常见问题
+- 如果 extract_success 为 False：
+  - 请首先尝试传入 xpath（如果你能通过浏览器定位到正确的正文节点）以绕过自动定位。
+  - 检查输入 HTML 是否为完整页面（有时只传入片段会导致定位失败）。
+- 占位符映射（placeholder_mapping）为 JSON 字符串，解析后可将占位符替换为真实资源 URL。
+- 页面含有大量 JS 动态渲染内容时，建议先用 headless 浏览器（如 puppeteer / Playwright）将渲染后的 HTML 导出，再传入本服务。
 
+安全与许可
+- 许可证：MIT（详见仓库 LICENSE 文件）
+- 注意爬取/处理网页时遵守目标网站的 robots 协议与使用条款，并注意版权/隐私合规。
 
-### HTMLInput
+开发者提示（给维护者）
+- 主要逻辑散布在 `deploy_docker_local/app/app.py`（正文定位、清洗、转换）与 `deploy_docker_local/app/zprogress.py`（调���界面）。修改算法参数前请确保有充分的回归测试。
+- 日志采用 rotating handler（见 app.py 的日志设置），请关注日志文件以定位边缘案例。
 
+贡献
+- 欢迎提交 issue 报告 bug 或提出改进建议。对于算法或规则类改动，请附上对比测试样例（原始 HTML + 期望结果）。
 
-| 字段名 | 类型 | 必填 | 描述 | 示例值 |
-|--------|------|------|------|--------|
-| html_content | string | 是 | 待处理的HTML内容 | `"<html>...</html>"` |
-| url | string | 是 | 源页面URL | `"https://example.com"` |
-| need_placeholder | Boolean | 是 | 表示是否启用占位符处理 | `"True"` |
-
-### MarkdownOutput
-
-
-| 字段名 | 类型 | 描述 | 示例值 |
-|--------|------|------|--------| 
-| html_content | string | 提取后的网页html | `"<div><p>正文</p></div>"` |
-| status | string | 处理状态用于记录程序内部错误：`success` 或 `failed` | `"success"` |
-| header_content_text | string | 正文之上的内容（标题、面包屑等） | `"首页 > 新闻 > 正文"` |
-| cl_content_html | string | 清理过后的正文HTML（去除标题和正文间的无关内容） | `"<div><p>清理后的正文</p></div>"` |
-| cl_content_md | string | 清理过后的正文Markdown | `"清理后的正文"` |
-| cl_content_text | string | 清理过后的正文纯文本 | `"清理后的正文"` |
-| placeholder_html | string | 清理过后的正文HTML（带占位符） | `"<div><p>清理后的正文</p></div>"` |
-| placeholder_markdown | string | 清理过后的正文Markdown（带占位符） | `"清理后的正文"` |
-| placeholder_mapping | string | 网页资源对应关系（资源占位符和资源链接对应关系） | `"[是json字符串]"` |
-| extract_success | boolean | 正文提取是否成功 | `True` |
-
-> 需要关注、使用的字段为：header_content_text、cl_content_html、cl_content_md、cl_content_text、extract_success，这些字段可能会出现以下两种情况：
-1. 当`extract_success`为 `True` 时,表示正文提取成功
-    * 但此时`header_content_text`可能是空的，此字段为空时标志着文章header提取失败
-2. 当`extract_success`为 `False` 时,表示正文提取失败
-    * 此时`cl_content_html`、`cl_content_md`、`cl_content_text`三个值可能依然存在内容，但请忽略，使用原始输入的html作为正文即可
-    * `header_content_text`此时该字段可能不为空，依然存在内容，这种情况一定概率是程序将正文内容识别为了header而放到了header里面，导致正文字段无内容，请自行处理。
-
-
-## 错误码说明
-
-| HTTP状态码 | 错误类型 | 说明 | 示例响应 |
-|------------|----------|------|----------|
-| 400 | Bad Request | 请求参数错误，如HTML内容为空 | `{"detail": "HTML内容不能为空"}` |
-| 422 | Unprocessable Entity | 无法从HTML中提取有效内容 | `{"detail": "无法从HTML中提取有效内容"}` |
-| 500 | Internal Server Error | 服务器内部错误 | `{"detail": "服务器内部错误: 具体错误信息"}` |
-
-
-### 使用步骤：
-
-
-1. 先进入虚拟环境，要是误删除了虚拟环境文件，就按照requirement_updated重新安装
-
-```shell
-. venv/bin/activate 
-```
-2. 看看配置文件里面的是否符合你的要求
-
-3. 然后进行部署
-
-```shell
-chmod +x deploy.sh
-./deploy.sh
-```
-
-当然可以！以下是对你提供的 **Nginx 负载均衡部署与调试指南** 的整理和美化版本，结构清晰、重点突出，便于团队协作或文档归档使用：
-
----
-
-#  Nginx 负载均衡部署与调试指南
-
-在单台服务器上部署多个后端服务（如 Gunicorn 应用），并通过 **Nginx 实现负载均衡**，具有以下优势：
-
-- 提升整体吞吐能力，分摊高并发压力；
-- 支持**滚动更新**：可下线一个实例进行优化/修复，其余实例继续提供服务，保障可用性。
-
----
-
-##  Nginx 配置文件设置
-
-配置路径：`/etc/nginx/nginx.conf`
-
-在 `http` 块中添加如下内容：
-
-```nginx
-upstream htmlparser {
-    # 后端服务地址（Gunicorn 监听端口）
-    server 127.0.0.1:8001;
-    server 127.0.0.1:8002;
-
-    # 保持与后端的长连接池（对高并发至关重要）
-    keepalive 32;
-}
-
-server {
-    listen       8000;
-    server_name  192.168.182.41;  # 可替换为实际 IP 或域名
-
-    location / {
-        proxy_pass http://htmlparser;
-
-        # === 基础代理头 ===
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-
-        # === 关键优化：启用 HTTP/1.1 ===
-        proxy_http_version 1.1;
-
-        # === 支持 WebSocket 与 Keep-Alive ===
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-    }
-}
-```
-然后执行`/usr/local/nginx/sbin/nginx -t`,看是否输出successful，表明nginx.conf是没有问题的
-
->  **新增服务时**：只需在 `upstream` 块中追加一行 `server 127.0.0.1:<新端口>;` 即可。
-
----
-
-##  启动前准备：清理旧进程 & SELinux 配置
-
-###  查找并终止占用端口的旧进程
-
-```bash
-# 查看 80 或 8000 端口占用情况
-netstat -ntlp | grep -E ':80|:8000'
-
-# 强制终止指定 PID（替换 <PID> 为实际进程 ID）
-kill -9 <PID>
-
-# 或直接杀掉所有 nginx 进程
-killall nginx
-```
-
-###  解决 SELinux 权限问题
-
-####  允许 Nginx 绑定 8000 端口（非标准 HTTP 端口）
-
-```bash
-# 安装策略管理工具（若未安装）
-yum install -y policycoreutils-python-utils
-
-# 将 8000 加入允许的 HTTP 端口列表
-semanage port -a -t http_port_t -p tcp 8000
-```
-
-####  允许 Nginx 连接上游后端（解决 502 Bad Gateway）
-
-```bash
-# 允许 httpd（即 Nginx）发起网络连接
-setsebool -P httpd_can_network_connect 1
-```
-
->  **注意**：务必先启动后端服务，再启动 Nginx！
+联系方式
+- 仓库所有者 / 维护者信息见 GitHub 页面：https://github.com/Halukisan/XpathGet
 
 ---
 
-##  启动服务流程
-
-### 常规
-```bash
-# 1. 启动后端服务（例如通过 deploy.sh）
-chmod +x deploy.sh
-./deploy.sh
-
-# 2. 启动 Nginx
-systemctl start nginx
-```
-### docker
-进入dockerdeploy文件夹下，里面有compose文件和app文件夹，
-```shell
-docker-compose up --build -d
-```
-直接启动三个容器，每个容器下有四个worker
-
----
-
-##  验证负载均衡是否生效
-
-### 方法：观察日志轮询
-
-**终端窗口 1**：实时监控两个后端的日志  
-```bash
-tail -f access_8001.log access_8002.log
-```
-
-**终端窗口 2**：连续发送请求  
-```bash
-for i in {1..6}; do
-    curl http://127.0.0.1:8000/health
-    echo ""
-done
-```
-
- **预期现象**：日志中交替出现来自 `8001` 和 `8002` 的访问记录，证明 **轮询（Round-Robin）负载均衡已生效**。
-
----
-
-##  接口功能验证
-
-测试全链路连通性：
-
-```bash
-curl -v http://127.0.0.1:8000/health
-```
-
-- 若返回 `HTTP/1.1 200 OK` → 服务正常；
-- 若返回 `405 Method Not Allowed` → 后端已响应（接口存在但方法不支持），也说明链路通畅；
-- 若返回 `502 Bad Gateway` → 检查后端是否启动、SELinux 设置或防火墙。
-
----
-
-
-> 💡 提示：生产环境中建议配合 `systemd` 管理后端服务，并使用 `nginx -t` 测试配置语法后再重载。
-
----
-
-如有更多需求（如权重分配、健康检查、会话保持等），可进一步扩展 `upstream` 配置。
+快速上手小结
+1. 激活 Python 虚拟环境：`. venv/bin/activate`  
+2. 安装依赖：`pip install -r requirements_updated`  
+3. 启动 API：`uvicorn deploy_docker_local.app.app:app --host 0.0.0.0 --port 8000`  
+4. 调试：访问 `/docs` 或启动 Gradio 前端，粘贴 HTML 测试抽取结果
