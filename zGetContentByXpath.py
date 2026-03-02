@@ -303,7 +303,11 @@ def clean_table_html(table_html: str) -> str:
             'tbody': [],
             'tr': [],
             'th': ['colspan', 'rowspan'],
-            'td': ['colspan', 'rowspan']
+            'td': ['colspan', 'rowspan'],
+            'img': ['src', 'alt'],  # 保留图片的src和alt属性
+            'video': ['src', 'poster', 'controls'],  # 保留视频属性
+            'audio': ['src', 'controls'],  # 保留音频属性
+            'source': ['src', 'type']  # 保留source属性
         }
 
         def clean_style_attribute(style_value: str) -> str:
@@ -2178,11 +2182,19 @@ def calculate_text_density(element):
     # 计算标签数量
     all_tags = element.xpath(".//*")
     tag_count = len(all_tags)
-    
-    # 计算链接数量（链接通常在导航中密集出现）
-    links = element.xpath(".//a")
-    link_count = len(links)
-    
+
+    # 计算有效链接数量（链接通常在导航中密集出现）
+    # 只统计有有效href的a标签，排除javascript:、#、mailto:等
+    links = element.xpath(".//a[@href]")
+    link_count = 0
+    for link in links:
+        href = link.get('href', '').strip().lower()
+        # 过滤无效链接
+        if (href and href != '#' and not href.startswith('javascript:')
+            and not href.startswith(('mailto:', 'tel:', 'sms:', 'data:'))
+            and 'void(' not in href):
+            link_count += 1
+
     # 计算图片数量
     images = element.xpath(".//img")
     image_count = len(images)
@@ -2423,9 +2435,19 @@ def is_interference_container(container):
         return True
     
     # 4. 基于链接密度的判断 - trafilatura会分析链接分布
-    links = container.xpath(".//a")
-    if len(links) > 5:
-        link_text_length = sum(len(link.text_content()) for link in links)
+    # 只统计有效链接（排除javascript:、#、mailto:等）
+    links = container.xpath(".//a[@href]")
+    valid_links = []
+    for link in links:
+        href = link.get('href', '').strip().lower()
+        # 过滤无效链接
+        if (href and href != '#' and not href.startswith('javascript:')
+            and not href.startswith(('mailto:', 'tel:', 'sms:', 'data:'))
+            and 'void(' not in href):
+            valid_links.append(link)
+
+    if len(valid_links) > 5:
+        link_text_length = sum(len(link.text_content()) for link in valid_links)
         if text_length > 0:
             link_ratio = link_text_length / text_length
             # 链接文本占比过高，很可能是导航
@@ -3074,16 +3096,25 @@ def find_main_content_in_cleaned_html(cleaned_body, original_body=None):
 
         # 如果重新计算的分数与最高分相同，检查是否有极高链接密度
         if scored_containers and final_score == scored_containers[0][1]:
-            # 计算链接密度（使用与评分函数相同的逻辑）
+            # 计算链接密度（只统计有效链接）
             text_content = best_container.text_content().strip()
             text_length = len(text_content)
             have_muchLinks = False
 
             if text_length > 0:
-                links = best_container.xpath(".//a")
-                link_count = len(links)
-                logger.info(f"是否包含大量链接，链接数量为：{link_count}")
-                # 判断是否有大量链接（与评分函数第2445-2446行逻辑一致）
+                # 只统计有效链接（排除javascript:、#、mailto:等）
+                links = best_container.xpath(".//a[@href]")
+                link_count = 0
+                for link in links:
+                    href = link.get('href', '').strip().lower()
+                    # 过滤无效链接
+                    if (href and href != '#' and not href.startswith('javascript:')
+                        and not href.startswith(('mailto:', 'tel:', 'sms:', 'data:'))
+                        and 'void(' not in href):
+                        link_count += 1
+
+                logger.info(f"是否包含大量链接，有效链接数量为：{link_count}")
+                # 判断是否有大量链接（与评分函数逻辑一致）
                 if link_count >= 5:
                     have_muchLinks = True
 
@@ -3133,6 +3164,31 @@ def find_main_content_in_cleaned_html(cleaned_body, original_body=None):
     #             logger.info(f"   子元素数: {final_child_count}")
 
     return best_container
+
+def has_document_attachments(container):
+    """
+    检查容器中是否包含PDF、WORD、EXCEL等文档附件链接
+
+    Args:
+        container: lxml元素对象
+
+    Returns:
+        bool: 如果包含文档附件返回True
+    """
+    # 定义文档附件扩展名
+    doc_extensions = {'.pdf', '.doc', '.docx', '.xls', '.xlsx'}
+
+    # 检查所有<a>标签的href属性
+    for link in container.xpath(".//a[@href]"):
+        href = link.get('href', '').lower()
+        # 检查href是否以文档扩展名结尾，或包含文档扩展名（处理带参数的URL）
+        for ext in doc_extensions:
+            if href.endswith(ext) or f'{ext}?' in href or f'{ext}#' in href:
+                logger.info(f"📎 检测到文档附件: {href}")
+                return True
+
+    return False
+
 def is_child_of(child_element, parent_element):
     """检查child_element是否是parent_element的子节点"""
     current = child_element.getparent()
@@ -3189,6 +3245,11 @@ def select_best_container_prefer_child(similar_containers, all_scored_containers
                 if child_text_length < parent_text_length * 0.6:
                     logger.info(f"子节点内容过少({child_text_length} vs {parent_text_length})，选择父节点")
                     return parent
+
+                # 【新增】检查父容器是否包含文档附件，如果有则选择父容器以保留附件链接
+                if has_document_attachments(parent):
+                    logger.info(f"📎 父容器包含PDF/WORD/EXCEL附件，选择父容器以保留附件链接")
+                    return parent
             
             logger.info(f"选择子容器: {best_child.tag} class='{best_child.get('class', '')}' (父子分差: {score_diff})")
             return best_child
@@ -3216,8 +3277,27 @@ def select_deepest_container_from_similar(similar_containers):
     # 选择层级最深的容器
     deepest_container = container_depths[0][0]
     deepest_depth = container_depths[0][1]
-    
+
     logger.info(f"选择最深层容器 (深度 {deepest_depth}): {deepest_container.tag} class='{deepest_container.get('class', '')}'")
+
+    # 【回溯检查】检查父容器是否有附件，如果有则考虑使用父容器
+    # 向上遍历父容器（最多3层），检查是否有附件而子容器没有
+    current = deepest_container
+    for level in range(1, 4):  # 检查1-3层父容器
+        parent = current.getparent()
+        if parent is None or parent.tag in ['body', 'html', None]:
+            break
+
+        # 检查父容器是否有附件
+        if has_document_attachments(parent):
+            # 检查子容器（当前选中的容器）是否没有附件
+            if not has_document_attachments(deepest_container):
+                logger.info(f"📎 回溯判断: 第{level}层父容器有附件，而子容器无附件，选择父容器")
+                logger.info(f"   父容器: {parent.tag} class='{parent.get('class', '')}'")
+                return parent
+
+        current = parent
+
     return deepest_container
 
 def calculate_container_depth(container):
@@ -3407,14 +3487,50 @@ def calculate_content_container_score(container):
         'header', 'footer', 'nav', 'navigation', 'menu', 'menubar', 'tab-',
         'topbar', 'bottom', 'sidebar', 'aside', 'banner', 'ad', 'advertisement','dropdown','drop'
     ]
+    def is_valid_link(href):
+        """
+        判断一个href是否是有效的链接
+
+        无效链接包括：
+        - javascript: 伪协议
+        - # 或 #xxx 锚点链接
+        - mailto:, tel:, sms: 等协议
+        - javascript:void(0) 等代码
+        - 空值
+        """
+        if not href or not isinstance(href, str):
+            return False
+
+        href = href.strip().lower()
+
+        # 空链接
+        if not href or href == '#':
+            return False
+
+        # JavaScript伪协议
+        if href.startswith('javascript:'):
+            return False
+
+        # 其他伪协议
+        if href.startswith(('mailto:', 'tel:', 'sms:', 'data:', 'ftp:')):
+            return False
+
+        # void(0) 等JavaScript代码
+        if 'void(' in href or 'return ' in href or 'function(' in href:
+            return False
+
+        return True
+
     def count_all_links(container):
-        """统计容器中的链接数量，避免重复统计"""
+        """统计容器中的有效链接数量，避免重复统计"""
         # 使用集合去重，避免重复统计
         all_links = set()
 
-        # 1. 统计所有 a 标签的 href 属性
+        # 1. 统计所有 a 标签的 href 属性（只统计有效链接）
         a_hrefs = container.xpath(".//a/@href")
-        all_links.update(a_hrefs)
+        for href in a_hrefs:
+            if is_valid_link(href):
+                all_links.add(href)
 
         # 2. 统计 img 标签的 src 属性（排除已经在 a 标签中的）
         img_srcs = container.xpath(".//img/@src")
@@ -3423,10 +3539,6 @@ def calculate_content_container_score(container):
         # 3. 统计 data-src 属性
         data_srcs = container.xpath(".//@data-src")
         all_links.update(data_srcs)
-
-        # 过滤掉空值
-        all_links.discard('')
-        all_links.discard('#')
 
         # 4. 从文本中提取链接（排除已经在 HTML 属性中的）
         extracted_text = container.text_content()
@@ -3519,10 +3631,20 @@ def calculate_content_container_score(container):
     have_muchLinks = False
     # 3. 链接密度检查
     link_count = count_all_links(container)
-    all_links = container.xpath(".//a")  # 定义 links 变量
+
+    # 获取所有有效链接（用于计算链接文本占比）
+    all_links = container.xpath(".//a[@href]")
+    valid_links_for_text = []
+    for link in all_links:
+        href = link.get('href', '').strip().lower()
+        # 过滤无效链接（与count_all_links中的is_valid_link逻辑一致）
+        if (href and href != '#' and not href.startswith('javascript:')
+            and not href.startswith(('mailto:', 'tel:', 'sms:', 'data:'))
+            and 'void(' not in href):
+            valid_links_for_text.append(link)
 
     if link_count and text_length > 0:
-        link_text_total = sum(len(link.text_content().strip()) for link in all_links)
+        link_text_total = sum(len(link.text_content().strip()) for link in valid_links_for_text)
 
         # 每1000字符的链接数（更直观）
         links_per_1000_chars = (link_count / text_length) * 1000
