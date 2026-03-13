@@ -5437,7 +5437,7 @@ async def extract_html_to_markdown(input_data: HTMLInput):
     Args:
         input_data: 包含HTML内容的输入数据
             - html_content: HTML内容
-            - url: 可选的URL
+            - url: URL
             - need_placeholder: 是否启用资源替换为占位符的服务
             - xpath: 可选的xpath参数，如果提供则直接使用xpath获取内容，跳过正文定位
 
@@ -5459,17 +5459,31 @@ async def extract_html_to_markdown(input_data: HTMLInput):
         if input_data.xpath and input_data.xpath.strip():
             logger.info(f"检测到xpath参数，跳过正文定位，直接使用xpath获取内容: {input_data.xpath}")
 
-            # 1. 删除HTML注释（使用与extract_content_to_markdown相同的正则方法）
-            html_content = re.sub(r'<!--[\s\S]*?-->', '', input_data.html_content)
+            try:
+                # 1. 删除HTML注释（使用与extract_content_to_markdown相同的正则方法）
+                html_content = re.sub(r'<!--[\s\S]*?-->', '', input_data.html_content)
+                logger.info(f"删除注释后HTML长度: {len(html_content)}")
 
-            # 2. 解析HTML
-            tree = lxml_html.fromstring(html_content)
+                # 2. 解析HTML - 使用HTMLParser并忽略命名空间问题
+                # 移除xmlns命名空间声明，避免xpath查询失败
+                html_content = re.sub(r'\s+xmlns[^=]*="[^"]*"', '', html_content)
+                parser = lxml_html.HTMLParser(remove_blank_text=True, remove_comments=True)
+                tree = lxml_html.fromstring(html_content, parser=parser)
+                logger.info(f"HTML解析成功，tree类型: {type(tree)}")
 
-            # 3. 使用xpath获取元素
-            elements = tree.xpath(input_data.xpath.strip())
+                # 3. 使用xpath获取元素
+                elements = tree.xpath(input_data.xpath.strip())
+                logger.info(f"xpath查询完成，找到 {len(elements)} 个元素")
 
-            if not elements:
-                raise HTTPException(status_code=422, detail=f"xpath未找到任何元素: {input_data.xpath}")
+                if not elements:
+                    logger.error(f"xpath未找到任何元素: {input_data.xpath}")
+                    raise HTTPException(status_code=422, detail=f"xpath未找到任何元素: {input_data.xpath}")
+
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"处理xpath时发生错误: {str(e)}", exc_info=True)
+                raise HTTPException(status_code=422, detail=f"处理xpath时发生错误: {str(e)}")
 
             # 4. 获取第一个匹配的元素
             main_container = elements[0]
