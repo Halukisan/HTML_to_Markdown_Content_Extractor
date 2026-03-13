@@ -1577,6 +1577,14 @@ class MarkdownOutput(BaseModel):
     placeholder_mapping: str = ""
     # 新增字段结束
 
+class SimpleMarkdownInput(BaseModel):
+    html_content: str
+    url: str = ""
+
+class SimpleMarkdownOutput(BaseModel):
+    success: bool
+    placeholder_markdown: str = ""
+    placeholder_mapping: str = ""
 # 移除了浏览器相关的函数，现在只处理HTML内容
 def remove_header_footer_by_content_traceback(body):
     
@@ -5411,15 +5419,16 @@ def process_with_placeholders(html_content: str, url: str = "") -> dict:
 # FastAPI路由
 @app.get("/")
 async def root():
-    """根路径，返回API信息"""
     return {
         "message": "HTML to Markdown Content Extractor API",
         "version": "2.0.0",
         "endpoints": {
             "/extract": "POST - Extract main content from HTML and convert to Markdown",
+            "/convert_to_markdown": "POST - Convert HTML to Markdown with placeholder replacement (no content extraction)",
             "/health": "GET - Health check"
         }
     }
+
 
 @app.get("/health")
 async def health_check():
@@ -5576,6 +5585,36 @@ async def extract_html_to_markdown(input_data: HTMLInput):
     except Exception as e:
         logger.error(f"处理请求时出错: {str(e)}")
         raise HTTPException(status_code=500, detail=f"服务器内部错误: {str(e)}")
+@app.post("/convert_to_markdown", response_model=SimpleMarkdownOutput)
+async def convert_html_to_markdown(input_data: SimpleMarkdownInput):
+    """
+    简单的HTML转Markdown接口，不进行正文提取。
+    功能：清洗HTML、占位符替换、转markdown
+    """
+    try:
+        if not input_data.html_content.strip():
+            raise HTTPException(status_code=400, detail="HTML内容不能为空")
+
+        # 1. 清洗HTML
+        cleaned_html = clean_html_content_advanced(input_data.html_content)
+
+        # 2. 占位符替换并转markdown
+        placeholder_result = process_with_placeholders(cleaned_html, input_data.url)
+
+        return SimpleMarkdownOutput(
+            success=True,
+            placeholder_markdown=placeholder_result.get('placeholder_markdown', ''),
+            placeholder_mapping=placeholder_result.get('placeholder_mapping', '')
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        return SimpleMarkdownOutput(
+            success=False,
+            placeholder_markdown="",
+            placeholder_mapping=""
+        )
 
 import os
 import glob
