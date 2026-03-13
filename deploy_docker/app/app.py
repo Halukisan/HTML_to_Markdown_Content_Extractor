@@ -1069,22 +1069,31 @@ class HTMLInput(BaseModel):
     
 class MarkdownOutput(BaseModel):
     # markdown_content: str
-    html_content: str  
+    html_content: str
     # xpath: str
     status: str
     # process_time: float
 
-    header_content_text: str = ""  
+    header_content_text: str = ""
 
-    cl_content_html: str = ""      
-    cl_content_md: str = ""        
-    content_text: str = "" 
+    cl_content_html: str = ""
+    cl_content_md: str = ""
+    content_text: str = ""
 
-    extract_success: bool = False  
+    extract_success: bool = False
 
     placeholder_html: str = ""
     placeholder_markdown: str = ""
     # placeholder_text: str = ""
+    placeholder_mapping: str = ""
+
+class SimpleMarkdownInput(BaseModel):
+    html_content: str
+    url: str = ""
+
+class SimpleMarkdownOutput(BaseModel):
+    success: bool
+    placeholder_markdown: str = ""
     placeholder_mapping: str = ""
      
 
@@ -3941,6 +3950,7 @@ async def root():
         "version": "2.0.0",
         "endpoints": {
             "/extract": "POST - Extract main content from HTML and convert to Markdown",
+            "/convert_to_markdown": "POST - Convert HTML to Markdown with placeholder replacement (no content extraction)",
             "/health": "GET - Health check"
         }
     }
@@ -4035,6 +4045,31 @@ async def extract_html_to_markdown(input_data: HTMLInput):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"服务器内部错误: {str(e)}")
+
+@app.post("/convert_to_markdown", response_model=SimpleMarkdownOutput)
+async def convert_html_to_markdown(input_data: SimpleMarkdownInput):
+    try:
+        if not input_data.html_content.strip():
+            raise HTTPException(status_code=400, detail="HTML内容不能为空")
+
+        cleaned_html = clean_html_content_advanced(input_data.html_content)
+
+        placeholder_result = process_with_placeholders(cleaned_html, input_data.url)
+
+        return SimpleMarkdownOutput(
+            success=True,
+            placeholder_markdown=placeholder_result.get('placeholder_markdown', ''),
+            placeholder_mapping=placeholder_result.get('placeholder_mapping', '')
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        return SimpleMarkdownOutput(
+            success=False,
+            placeholder_markdown="",
+            placeholder_mapping=""
+        )
 
 import os
 import glob
