@@ -1247,7 +1247,7 @@ def remove_html_comments(element):
 
         clended_length = len(html_str)
 
-        if cleaned_length < original_length:
+        if clended_length < original_length:
             logger.info(f"🧹 remove_html_comments: 正则删除注释 ({original_length} -> {clended_length} 字符)")
     return count
 
@@ -1264,7 +1264,7 @@ def preprocess_html_remove_interference(page_tree):
         return None
 
     def clean_comment_text(node):
-        if hasattr(node, 'tag') and node.tag == lxml.html.Comment:
+        if hasattr(node, 'tag') and node.tag == lxml_html.html.Comment:
             parent = node.getparent()
             if parent is not None:
                 comment_text = node.text if node.text else ''
