@@ -372,7 +372,10 @@ def remove_empty_tags(soup: BeautifulSoup) -> None:
     """
     # 定义需要保留的空标签（即使它们没有内容）
     tags_to_keep_empty = {'br', 'hr', 'img', 'input', 'embed', 'area', 'base', 'col', 'frame', 'link', 'meta', 'param', 'source', 'track', 'wbr','video'}
-
+    MEDIA_EXTENSIONS = {
+        '.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac',
+        '.mp4', '.webm', '.mov', '.avi', '.mkv', '.flv', '.m3u8'
+    }
     # 递归清理空标签
     changed = True
     while changed:
@@ -1813,7 +1816,7 @@ def preprocess_html_remove_interference(page_tree):
     def clean_comment_text(node):
         """递归清理节点中的注释文本"""
         # 检查当前节点是否是注释
-        if hasattr(node, 'tag') and node.tag == lxml.html.Comment:
+        if hasattr(node, 'tag') and node.tag == lxml_html.html.Comment:
             parent = node.getparent()
             if parent is not None:
                 # 获取注释文本
