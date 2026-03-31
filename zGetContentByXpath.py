@@ -2352,7 +2352,7 @@ def remove_low_density_containers(body):
         # 检查是否包含文章特征（时间、标题等）
         has_article_features = bool(
             container.xpath(".//h1 | .//h2 | .//h3") or  # 标题
-            container.xpath(".//*[contains(text(), '发布时间') or contains(text(), '来源') or contains(text(), '浏览次数')]") or  # 文章元信息
+            container.xpath(".//*[contains(normalize-space(text()), '发布时间') or contains(normalize-space(text()), '来源') or contains(normalize-space(text()), '浏览次数')]") or# 文章元信息
             len(container.xpath(".//p")) > 3  # 多个段落
         )
         
