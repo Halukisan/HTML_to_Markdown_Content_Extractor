@@ -35,6 +35,28 @@ def setup_logging():
 
 logger = setup_logging()
 
+TAGS_TO_DELETE_1 = [
+    "已阅","字号", "打印", "关闭", "收藏","分享到微信","分享","字体","小","中","大","s92及gd格式的文件请用SEP阅读工具",
+    "扫一扫在手机打开当前页", "扫一扫在手机上查看当前页面","用微信“扫一扫”","分享给您的微信好友",
+    "相关链接",'下载文字版','下载图片版','扫一扫在手机打开当前页面',"微信扫一扫：分享","上一篇","下一篇","【打印文章】","返回顶部","回到顶部",
+    "你的浏览器不支持video","当前位置：","微信里点“发现”，扫一下","浏览次数：","您当前的位置：",'返回上一页',"您现在是游客状态"
+]
+
+TAGS_TO_DELETE_2 = [
+    "已阅","字号", "打印", "关闭", "收藏","分享到微信","分享","字体","小","中","大","s92及gd格式的文件请用SEP阅读工具",
+    "扫一扫在手机打开当前页", "扫一扫在手机上查看当前页面","用微信“扫一扫”","分享给您的微信好友",
+    "相关链接",'下载文字版','下载图片版','扫一扫在手机打开当前页面',"微信扫一扫：分享","上一篇","下一篇","【打印文章】","返回顶部","你的浏览器不支持video",
+    "当前位置：","首页","信息公开目录","索引号","发布时间：202"
+]
+
+TAGS_TO_DELETE_PATTERN_1 = re.compile('|'.join(re.escape(text) for text in TAGS_TO_DELETE_1))
+TAGS_TO_DELETE_PATTERN_2 = re.compile('|'.join(re.escape(text) for text in TAGS_TO_DELETE_2))
+
+URL_PATTERN = re.compile(r'\b(?:https?://|www\.)[^\s<>"]+', re.IGNORECASE)
+ERROR_PATTERN = re.compile("我要纠错")
+HIDDEN_STYLE_PATTERN = re.compile(r'(display\s*:\s*none)|(visibility\s*:\s*hidden)', re.IGNORECASE)
+COMMENT_PATTERN = re.compile(r'<!--[\s\S]*?-->')
+
 app = FastAPI(
     title="HTML to Markdown Content Extractor",
     description="Extract main content from HTML and convert to Markdown",
@@ -99,13 +121,99 @@ class CustomMarkdownConverter(MarkdownConverter):
         return f'\n<audio controls preload="metadata"><source src="{safe_src}"></audio>\n'
         
 
+def delete_multiple_short_tags(soup: BeautifulSoup, pattern: re.Pattern, tag_texts: list[str]) -> None:
+    if not tag_texts or not pattern:
+        return
+
+    elements_to_delete = []
+    file_extensions = {'.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.zip', '.rar', '.txt', '.csv', '.mp3', '.mp4'}
+    file_exts_lower = {ext.lower() for ext in file_extensions}
+
+    url_pattern = URL_PATTERN
+
+    for element in soup.find_all(string=pattern):
+        if not hasattr(element, 'parent') or element.parent is None:
+            continue
+
+        parent = element.parent
+        if not hasattr(parent, 'decompose'):
+            continue
+
+        try:
+            parent_text = parent.get_text(strip=True)
+        except Exception:
+            continue
+
+        has_attachment = False
+
+        if parent.name == 'a' and parent.has_attr('href'):
+            href = parent.get('href', '').strip()
+            if href:
+                href_lower = href.lower()
+                if any(ext in href_lower for ext in file_exts_lower):
+                    has_attachment = True
+
+        if not has_attachment:
+            for link in parent.find_all('a', href=True):
+                href = link.get('href', '').strip()
+                if not href:
+                    continue
+                href_lower = href.lower()
+                if any(ext in href_lower for ext in file_exts_lower):
+                    has_attachment = True
+                    break
+
+        if not has_attachment:
+            for url in url_pattern.findall(parent_text):
+                url_lower = url.lower()
+                if any(ext in url_lower for ext in file_exts_lower):
+                    has_attachment = True
+                    break
+
+        if has_attachment:
+            continue
+
+        has_tag_text = any(tag_text in parent_text for tag_text in tag_texts)
+        if not has_tag_text:
+            continue
+
+        if len(parent_text) >= 50:
+            continue
+
+        lower_text = parent_text.lower()
+        forbidden_keywords = {'文章', '内容', '正文', '详情', '更多信息', '附件', '.pdf', '中心'}
+        if any(kw in lower_text for kw in forbidden_keywords):
+            continue
+
+        if parent.name in {'span', 'div', 'a', 'button', 'p', 'dt', 'li', 'h4', 'font'}:
+            if parent.name == 'button':
+                path_attr = parent.get('path')
+                if path_attr:
+                    path_lower = path_attr.lower()
+                    if any(ext in path_lower for ext in ('.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac')):
+                        pass
+                    else:
+                        elements_to_delete.append(parent)
+                else:
+                    elements_to_delete.append(parent)
+            else:
+                elements_to_delete.append(parent)
+
+    for elem in elements_to_delete:
+        try:
+            if elem and hasattr(elem, 'decompose'):
+                elem.decompose()
+        except Exception as e:
+            logger.warning(f"delete_multiple_short_tags 删除失败: {e}")
+
+
 def delete_short_tags(soup: BeautifulSoup, tag_text: str) -> None:
 
     elements_to_delete = []
     file_extensions = {'.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.zip', '.rar', '.txt', '.csv','.mp3','.mp4'}
     file_exts_lower = {ext.lower() for ext in file_extensions}
 
-    url_pattern = re.compile(r'\b(?:https?://|www\.)[^\s<>"]+', re.IGNORECASE)
+    url_pattern = URL_PATTERN
 
     for element in soup.find_all(string=re.compile(re.escape(tag_text))):
         if not hasattr(element, 'parent') or element.parent is None:
@@ -254,15 +362,15 @@ def clean_table_html(table_html: str) -> str:
 
 
 def remove_empty_tags(soup: BeautifulSoup) -> None:
-
-    tags_to_keep_empty = {'br', 'hr', 'img', 'input', 'embed', 'area', 'base', 'col', 'frame', 'link', 'meta', 'param', 'source', 'track', 'wbr','video'}
+    tags_to_keep_empty = {'br', 'hr', 'img', 'input', 'embed', 'area', 'base', 'col', 'frame', 'link', 'meta', 'param', 'source', 'track', 'wbr', 'video'}
     MEDIA_EXTENSIONS = {
         '.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac',
         '.mp4', '.webm', '.mov', '.avi', '.mkv', '.flv', '.m3u8'
     }
-    changed = True
-    while changed:
-        changed = False
+
+    # 批量删除空标签，避免 O(n²)
+    while True:
+        empty_tags = []
         for tag in soup.find_all(True):
             if tag.name in tags_to_keep_empty:
                 continue
@@ -286,9 +394,17 @@ def remove_empty_tags(soup: BeautifulSoup) -> None:
                         has_content = True
 
             if not has_content:
+                empty_tags.append(tag)
+
+        if not empty_tags:
+            break
+
+        # 批量删除
+        for tag in empty_tags:
+            try:
                 tag.decompose()
-                changed = True
-                break
+            except Exception:
+                pass
 
 
 def clean_html_content_advanced(html_content: str) -> str:
@@ -299,19 +415,11 @@ def clean_html_content_advanced(html_content: str) -> str:
         for tag in soup.find_all(['script', 'style', 'meta', 'link', 'noscript','el-button']):
             tag.decompose()
 
-        tags_to_delete = [
-            "已阅","字号", "打印", "关闭", "收藏","分享到微信","分享","字体","小","中","大","s92及gd格式的文件请用SEP阅读工具",
-            "扫一扫在手机打开当前页", "扫一扫在手机上查看当前页面","用微信“扫一扫”","分享给您的微信好友",
-            "相关链接",'下载文字版','下载图片版','扫一扫在手机打开当前页面',"微信扫一扫：分享","上一篇","下一篇","【打印文章】","返回顶部","回到顶部",
-            "你的浏览器不支持video","当前位置：","微信里点“发现”，扫一下","浏览次数：","您当前的位置：",'返回上一页',"您现在是游客状态"
-        ]
-        
-        for tag_text in tags_to_delete:
-            delete_short_tags(soup, tag_text)
+        delete_multiple_short_tags(soup, TAGS_TO_DELETE_PATTERN_1, TAGS_TO_DELETE_1)
 
         error_elements_to_delete = []
 
-        for element in soup.find_all(string=re.compile("我要纠错")):
+        for element in soup.find_all(string=ERROR_PATTERN):
             if not hasattr(element, 'parent') or element.parent is None:
                 continue
 
@@ -343,8 +451,8 @@ def clean_html_content_advanced(html_content: str) -> str:
             'source': ['src'],
             'iframe': ['src'],
             'br': [], 'hr': [],
-            'button':['path'],
-            'audio':[]
+            'button': ['path'],
+            'audio': []
         }
 
         def clean_attributes(tag):
@@ -363,14 +471,14 @@ def clean_html_content_advanced(html_content: str) -> str:
         for tag in soup.find_all(True):
             clean_attributes(tag)
 
+            if tag.name == 'img':
+                src = tag.get('src', '')
+                if not src or 'base64' in src.lower() or 'data:image' in src.lower():
+                    tag.decompose()
+
         for table in soup.find_all('table'):
             cleaned_table = clean_table_html(str(table))
             table.replace_with(BeautifulSoup(cleaned_table, 'html.parser'))
-        for img in soup.find_all('img'):
-            if img:
-                src = img.get('src', '')
-                if not src or 'base64' in src.lower() or 'data:image' in src.lower():
-                    img.decompose()
         containers = soup.find_all('caizhikeji_iframe')
 
         for container in containers:
@@ -445,9 +553,8 @@ def remove_invisible_tags(soup: BeautifulSoup):
         comment.extract()
     for hidden in soup.find_all(attrs={"hidden": True}):
         hidden.decompose()
-    style_pattern = re.compile(r'(display\s*:\s*none)|(visibility\s*:\s*hidden)', re.IGNORECASE)
     for tag in soup.find_all(attrs={"style": True}):
-        if style_pattern.search(tag['style']):
+        if HIDDEN_STYLE_PATTERN.search(tag['style']):
             tag.decompose()
 
     hidden_classes = ['pchide', 'hide', 'invisible', 'd-none','hidden']
@@ -592,10 +699,10 @@ def has_content_indicators(element: Tag) -> bool:
 def analyze_content_structure(element: Tag) -> dict:
 
     scores = {
-        'heading_score': 0,      # 
-        'content_score': 0,      # 
-        'structure_score': 0,    # 
-        'total_score': 0         # 
+        'heading_score': 0,      
+        'content_score': 0,      
+        'structure_score': 0,    
+        'total_score': 0         
     }
 
     if not element:
@@ -1058,9 +1165,9 @@ def clean_html_content_with_split(html_content: str) -> str:
 
     return header_text, cleaned_content_html, content_md, content_text
 
-# 
 
-# 
+
+
 class HTMLInput(BaseModel):
     html_content: str
     url: str = ""  #
@@ -1598,9 +1705,9 @@ def remove_low_density_containers(body):
                                   for indicator in important_indicators)
         
         has_article_features = bool(
-            container.xpath(".//h1 | .//h2 | .//h3") or  
-            container.xpath(".//*[contains(text(), '发布时间') or contains(text(), '来源') or contains(text(), '浏览次数')]") or  
-            len(container.xpath(".//p")) > 3  
+            container.xpath(".//h1 | .//h2 | .//h3") or
+            container.xpath(".//*[contains(normalize-space(text()), '发布时间') or contains(normalize-space(text()), '来源') or contains(normalize-space(text()), '浏览次数')]") or
+            len(container.xpath(".//p")) > 3
         )
         
         if has_important_content or has_article_features:
@@ -1821,11 +1928,10 @@ def extract_content_to_markdown(html_content: str):
         if not html_content or not isinstance(html_content, str):
             return result
 
-        comment_pattern = re.compile(r'<!--[\s\S]*?-->')
-        original_comments = comment_pattern.findall(html_content)
+        original_comments = COMMENT_PATTERN.findall(html_content)
 
         original_length = len(html_content)
-        html_content = re.sub(r'<!--[\s\S]*?-->', '', html_content)
+        html_content = COMMENT_PATTERN.sub('', html_content)
         removed = original_length - len(html_content)
 
 
@@ -2641,21 +2747,13 @@ def calculate_content_container_score(container):
         score += 50
     
     content_indicators = [
-        # 时间特征
         (r'\d{4}-\d{2}-\d{2}|\d{4}年\d{1,2}月\d{1,2}日|\d{4}/\d{1,2}/\d{1,2}|发布时间|更新日期|发布日期|成文日期', 30, '时间特征'),
-        # 公文特征
         (r'通知|公告|意见|办法|规定|措施|方案|决定|指导|实施', 40, '公文特征'),
-        # 条款特征
         (r'第[一二三四五六七八九十\d]+条|第[一二三四五六七八九十\d]+章|第[一二三四五六七八九十\d]+节', 35, '条款特征'),
-        # 政务信息特征
         (r'索引号|主题分类|发文机关|发文字号|有效性', 25, '政务信息'),
-        # 附件特征
         (r'附件|下载|pdf|doc|docx|文件下载', 20, '附件特征'),
-        # 内容结构特征
         (r'为了|根据|按照|依据|现将|特制定|现印发|请结合实际', 30, '内容结构'),
-        # 新闻内容特征
         (r'记者|报道|消息|新闻|采访|发表|刊登', 25, '新闻特征'),
-        # 正文内容特征
         (r'正文|内容|详情|全文|摘要|概述', 20, '正文特征')
     ]
     
@@ -2904,7 +3002,6 @@ def calculate_main_content_score(container):
 
 
 def is_in_footer_area(element):
-    """检查元素是否在footer区域"""
     current = element
     depth = 0
     while current is not None and depth < 10:  
@@ -3385,20 +3482,12 @@ def clean_html_content_advanced_two(html_content: str) -> str:
         for tag in soup.find_all(['script', 'style', 'meta', 'link', 'noscript']):
             tag.decompose()
 
-        
-        tags_to_delete = [
-            "已阅","字号", "打印", "关闭", "收藏","分享到微信","分享","字体","小","中","大","s92及gd格式的文件请用SEP阅读工具",
-            "扫一扫在手机打开当前页", "扫一扫在手机上查看当前页面","用微信“扫一扫”","分享给您的微信好友",
-            "相关链接",'下载文字版','下载图片版','扫一扫在手机打开当前页面',"微信扫一扫：分享","上一篇","下一篇","【打印文章】","返回顶部","你的浏览器不支持video",
-            "当前位置：","首页","信息公开目录","索引号","发布时间：202"
-        ]
 
-        for tag_text in tags_to_delete:
-            delete_short_tags(soup, tag_text)
+        delete_multiple_short_tags(soup, TAGS_TO_DELETE_PATTERN_2, TAGS_TO_DELETE_2)
 
         error_elements_to_delete = []
 
-        for element in soup.find_all(string=re.compile("我要纠错")):
+        for element in soup.find_all(string=ERROR_PATTERN):
             if not hasattr(element, 'parent') or element.parent is None:
                 continue
 
@@ -3766,8 +3855,10 @@ class URLPlaceholderReplacer:
         return placeholder
 
     def replace_urls_with_placeholders(self, html_content: str, base_url: str = "") -> str:
+
         soup = BeautifulSoup(html_content, 'html.parser')
-        def is_relative_path(url:str)->bool:
+
+        def is_relative_path(url: str) -> bool:
             if not url:
                 return False
             if url.startswith("/"):
@@ -3775,6 +3866,7 @@ class URLPlaceholderReplacer:
             if '://' not in url and not url.startswith(('javascript:', 'mailto:', 'tel:', '#', 'data:')):
                 return True
             return False
+
         def process_url(url: str) -> str:
             if not url:
                 return ""
@@ -3788,89 +3880,102 @@ class URLPlaceholderReplacer:
             url_lower = url.lower().split("?")[0]
             return url_lower.endswith('.html') or url_lower.endswith(".htm")
 
-        for video in soup.find_all('video'):
-            src = video.get('src')
-            if src:
-                full_src = process_url(src)
-                if not should_skip_url(full_src):
-                    placeholder = self._generate_placeholder(full_src)
-                    self.placeholder_mapping[placeholder] = full_src
-                    video['src'] = f"{{{{{placeholder}}}}}"
+        # 合并所有标签类型为一次遍历
+        target_tags = {'video', 'source', 'audio', 'iframe', 'button', 'img', 'a'}
 
-            poster = video.get('poster')
-            if poster:
-                full_poster = process_url(poster)
-                if not should_skip_url(full_poster):
-                    placeholder = self._generate_placeholder(full_poster)
-                    self.placeholder_mapping[placeholder] = full_poster
-                    video['poster'] = f"{{{{{placeholder}}}}}"
+        for tag in soup.find_all(True):
+            tag_name = tag.name
+            if tag_name not in target_tags:
+                continue
 
-        for source in soup.find_all('source'):
-            src = source.get('src')
-            if src:
-                full_src = process_url(src)
-                if not should_skip_url(full_src):
-                    placeholder = self._generate_placeholder(full_src)
-                    self.placeholder_mapping[placeholder] = full_src
-                    source['src'] = f"{{{{{placeholder}}}}}"
-
-        for audio in soup.find_all('audio'):
-            src = audio.get('src')
-            if src:
-                full_src = process_url(src)
-                if not should_skip_url(full_src):
-                    placeholder = self._generate_placeholder(full_src)
-                    self.placeholder_mapping[placeholder] = full_src
-                    audio['src'] = f"{{{{{placeholder}}}}}"
-
-        for iframe in soup.find_all('iframe'):
-            src = iframe.get('src')
-            if src and ('player' in src.lower() or 'video' in src.lower() or 'audio' in src.lower()):
-                full_src = process_url(src)
-                if not should_skip_url(full_src):
-                    placeholder = self._generate_placeholder(full_src)
-                    self.placeholder_mapping[placeholder] = full_src
-                    iframe['src'] = f"{{{{{placeholder}}}}}"
-
-        for button in soup.find_all('button'):
-            src = button.get('path')
-            if src:
-                src_lower = src.lower()
-                full_src = process_url(src)
-
-                audio_extensions = ('.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac')
-
-                if any(ext in src_lower for ext in audio_extensions):
+            if tag_name == 'video':
+                src = tag.get('src')
+                if src:
+                    full_src = process_url(src)
                     if not should_skip_url(full_src):
                         placeholder = self._generate_placeholder(full_src)
                         self.placeholder_mapping[placeholder] = full_src
-                        audio_tag = soup.new_tag('audio')
-                        audio_tag['src'] = f"{{{{{placeholder}}}}}"
-                        audio_tag['controls'] = 'controls'
-                        button.replace_with(audio_tag)
+                        tag['src'] = f"{{{{{placeholder}}}}}"
 
-        for img in soup.find_all('img'):
-            src = img.get('src')
-            if src:
-                full_src = process_url(src)
-                if not should_skip_url(full_src):
-                    placeholder = self._generate_placeholder(full_src)
-                    self.placeholder_mapping[placeholder] = full_src
-                    img['src'] = f"{{{{{placeholder}}}}}"
+                poster = tag.get('poster')
+                if poster:
+                    full_poster = process_url(poster)
+                    if not should_skip_url(full_poster):
+                        placeholder = self._generate_placeholder(full_poster)
+                        self.placeholder_mapping[placeholder] = full_poster
+                        tag['poster'] = f"{{{{{placeholder}}}}}"
 
-        for a in soup.find_all('a'):
-            href = a.get('href')
-            if href:
-                full_href = href
-                if is_relative_path(href) and base_url:
-                    full_href = urllib.parse.urljoin(base_url, href)
-                    a['href'] = full_href
+            elif tag_name == 'source':
+                src = tag.get('src')
+                if src:
+                    full_src = process_url(src)
+                    if not should_skip_url(full_src):
+                        placeholder = self._generate_placeholder(full_src)
+                        self.placeholder_mapping[placeholder] = full_src
+                        tag['src'] = f"{{{{{placeholder}}}}}"
 
-                if self.is_media_url(full_href):
-                    if not should_skip_url(full_href):
-                        placeholder = self._generate_placeholder(full_href)
-                        self.placeholder_mapping[placeholder] = full_href
-                        a['href'] = f"{{{{{placeholder}}}}}"
+            elif tag_name == 'audio':
+                src = tag.get('src')
+                if src:
+                    full_src = process_url(src)
+                    if not should_skip_url(full_src):
+                        placeholder = self._generate_placeholder(full_src)
+                        self.placeholder_mapping[placeholder] = full_src
+                        tag['src'] = f"{{{{{placeholder}}}}}"
+
+            elif tag_name == 'iframe':
+                src = tag.get('src')
+                if src and ('player' in src.lower() or 'video' in src.lower() or 'audio' in src.lower()):
+                    full_src = process_url(src)
+                    if not should_skip_url(full_src):
+                        placeholder = self._generate_placeholder(full_src)
+                        self.placeholder_mapping[placeholder] = full_src
+                        tag['src'] = f"{{{{{placeholder}}}}}"
+            # 处理button标签：将包含音频文件的button转换为audio标签
+            elif tag_name == 'button':
+                src = tag.get('path')
+                if src:
+                    src_lower = src.lower()
+                    full_src = process_url(src)
+                    # 音频扩展名
+                    audio_extensions = ('.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac')
+
+                    if any(ext in src_lower for ext in audio_extensions):
+                        if not should_skip_url(full_src):
+                            placeholder = self._generate_placeholder(full_src)
+                            self.placeholder_mapping[placeholder] = full_src
+                            # 创建audio标签替换button
+                            audio_tag = soup.new_tag('audio')
+                            audio_tag['src'] = f"{{{{{placeholder}}}}}"
+                            audio_tag['controls'] = 'controls'
+                            tag.replace_with(audio_tag)
+
+            elif tag_name == 'img':
+                src = tag.get('src')
+                if src:
+                    full_src = process_url(src)
+                    if not should_skip_url(full_src):
+                        placeholder = self._generate_placeholder(full_src)
+                        self.placeholder_mapping[placeholder] = full_src
+                        tag['src'] = f"{{{{{placeholder}}}}}"
+
+            elif tag_name == 'a':
+                href = tag.get('href')
+                if href:
+                    full_href = href
+                    # 如果是相对路径，拼接base_url
+                    if is_relative_path(href) and base_url:
+                        full_href = urllib.parse.urljoin(base_url, href)
+                        # 先更新href为完整链接
+                        tag['href'] = full_href
+
+                    # 只有文件类型才替换为占位符
+                    if self.is_media_url(full_href):
+                        if not should_skip_url(full_href):
+                            placeholder = self._generate_placeholder(full_href)
+                            self.placeholder_mapping[placeholder] = full_href
+                            tag['href'] = f"{{{{{placeholder}}}}}"
+
         return str(soup)
 
 
