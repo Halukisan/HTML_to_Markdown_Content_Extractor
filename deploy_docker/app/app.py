@@ -1193,6 +1193,7 @@ class MarkdownOutput(BaseModel):
     placeholder_markdown: str = ""
     # placeholder_text: str = ""
     placeholder_mapping: str = ""
+    version: str = ""
 
 class SimpleMarkdownInput(BaseModel):
     html_content: str
@@ -2324,7 +2325,15 @@ def find_main_content_in_cleaned_html(cleaned_body, original_body=None):
                 best_container = scored_containers[0][0]
                 final_score = scored_containers[0][1]
                 recalculated = False
-    
+        if scored_containers:
+            original_top1_score = scored_containers[0][1]
+            score_diff = original_top1_score - final_score
+
+            if final_score < 0 or score_diff > 100:
+                best_container = scored_containers[0][0]
+                final_score = scored_containers[0][1]
+                recalculated = False
+
     final_text_length = len(best_container.text_content().strip())
     final_child_count = len(best_container.xpath(".//*"))
     
@@ -2503,7 +2512,13 @@ def calculate_content_container_score(container):
             if 'bszn-content' in keyword.lower():
                 score += 200 
             break
-
+    sp3 = ['zhengwen']
+    for keyword in sp3:
+        if keyword.lower() in elem_id.lower():
+            if 'zhengwen' in keyword.lower():
+                score += 200 
+                debug_info.append(f"id出现了zhengwen")
+            break
     special_class_keywords = ['tab-']
     for keyword in special_class_keywords:
         if keyword.lower() in classes.lower():
@@ -2524,7 +2539,7 @@ def calculate_content_container_score(container):
    
     strong_interference_keywords = [
         'header', 'footer', 'nav', 'navigation', 'menu', 'menubar', 'tab-',
-        'topbar', 'bottom', 'sidebar', 'aside', 'banner', 'ad', 'advertisement','dropdown','drop'
+        'topbar', 'bottom', 'sidebar', 'aside', 'banner', 'ad', 'advertisement','dropdown','drop',"friend-link"
     ]
     def is_valid_link(href):
 
@@ -4143,7 +4158,8 @@ async def extract_html_to_markdown(input_data: HTMLInput):
             extract_success=final_result.get('extract_success', False),
             placeholder_html=placeholder_html,
             placeholder_markdown=placeholder_markdown,
-            placeholder_mapping=placeholder_mapping
+            placeholder_mapping=placeholder_mapping,
+            version="1.0"
         )
 
     except HTTPException:
