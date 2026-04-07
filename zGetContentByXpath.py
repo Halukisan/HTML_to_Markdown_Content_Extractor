@@ -3236,7 +3236,20 @@ def find_main_content_in_cleaned_html(cleaned_body, original_body=None):
                 best_container = scored_containers[0][0]
                 final_score = scored_containers[0][1]
                 recalculated = False
-    
+
+        # 【新增】检查重新计算的分数是否过低，如果过低则回退到原始top1
+        if scored_containers:
+            original_top1_score = scored_containers[0][1]
+            score_diff = original_top1_score - final_score
+
+            # 如果重新计算的分数为负数，或者与原始top1差距过大（超过150分），回退到top1
+            if final_score < 0 or score_diff > 100:
+                logger.warning(f"   ⚠ 重新计算的分数过低（{final_score}），与原始top1（{original_top1_score}）差距{score_diff}分")
+                logger.info(f"   🔄 回退到原始最高分容器")
+                best_container = scored_containers[0][0]
+                final_score = scored_containers[0][1]
+                recalculated = False
+
     final_text_length = len(best_container.text_content().strip())
     final_child_count = len(best_container.xpath(".//*"))
     
@@ -3542,7 +3555,13 @@ def calculate_content_container_score(container):
                 debug_info.append(f"id出现了bszn-content")
             break
 
-
+    sp3 = ['zhengwen']
+    for keyword in sp3:
+        if keyword.lower() in elem_id.lower():
+            if 'zhengwen' in keyword.lower():
+                score += 200 
+                debug_info.append(f"id出现了zhengwen")
+            break
     # 特殊class or id tab-表示为按钮a - 减分
     special_class_keywords = ['tab-']
     for keyword in special_class_keywords:
@@ -3597,7 +3616,7 @@ def calculate_content_container_score(container):
     # 2.1 强干扰特征（导航、头部、尾部等）- 大幅减分
     strong_interference_keywords = [
         'header', 'footer', 'nav', 'navigation', 'menu', 'menubar', 'tab-',
-        'topbar', 'bottom', 'sidebar', 'aside', 'banner', 'ad', 'advertisement','dropdown','drop'
+        'topbar', 'bottom', 'sidebar', 'aside', 'banner', 'ad', 'advertisement','dropdown','drop',"friend-link"
     ]
     def is_valid_link(href):
         """
